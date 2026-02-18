@@ -1,13 +1,13 @@
-# unifi-mcp-server
+# clr-unifi-mcp
 
 Ubiquiti UniFi network controller
 
 ## Install
 
 ```bash
-pip install unifi-mcp-server
+pip install clr-unifi-mcp
 # or
-uvx unifi-mcp-server
+uvx clr-unifi-mcp
 ```
 
 ## Configuration
@@ -35,16 +35,16 @@ uvx unifi-mcp-server
 See `--help` for additional options:
 
 ```bash
-unifi-mcp-server --help
+clr-unifi-mcp --help
 ```
 
 ## Development
 
 ```bash
-git clone https://github.com/clearminds/unifi-mcp-server.git
-cd unifi-mcp-server
+git clone https://github.com/clearminds/clr-unifi-mcp.git
+cd clr-unifi-mcp
 uv sync
-uv run unifi-mcp-server
+uv run clr-unifi-mcp
 ```
 
 ## License

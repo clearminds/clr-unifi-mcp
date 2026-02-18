@@ -7,8 +7,8 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from unifi_mcp_server.config import Settings, configure_logging
-from unifi_mcp_server.unifi_client import UniFiClient
+from clr_unifi_mcp.config import Settings, configure_logging
+from clr_unifi_mcp.unifi_client import UniFiClient
 
 
 def parse_cli_args() -> dict[str, Any]:

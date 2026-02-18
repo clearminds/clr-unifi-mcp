@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "unifi-mcp-server"
+name = "clr-unifi-mcp"
 version = "1.0.0"
 description = "A read-only MCP server for UniFi Network"
 requires-python = ">=3.11"
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/clearminds/unifi-mcp-server"
+Repository = "https://github.com/clearminds/clr-unifi-mcp"
 
 [project.scripts]
-unifi-mcp-server = "unifi_mcp_server.server:main"
+clr-unifi-mcp = "clr_unifi_mcp.server:main"
