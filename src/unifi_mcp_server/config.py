@@ -1,20 +1,30 @@
 """Configuration management for UniFi MCP Server."""
 
+import json
 import logging
 import logging.config
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
+CREDS_PATH = Path.home() / ".config" / "unifi" / "credentials.json"
+
 
 class Settings(BaseSettings):
     """Centralized configuration for UniFi MCP Server.
 
-    Configuration precedence: CLI > Environment > .env file > Defaults
+    Configuration precedence: CLI > Environment > credentials.json > .env file > Defaults
+
+    Priority order for credentials:
+    1. Environment variables (UNIFI_URL, UNIFI_USERNAME, UNIFI_PASSWORD, UNIFI_SITE)
+    2. ~/.config/unifi/credentials.json
     """
 
-    unifi_url: str
+    unifi_url: str = ""
     unifi_api_key: str = ""
     unifi_username: str = ""
     unifi_password: str = ""
@@ -43,9 +53,63 @@ class Settings(BaseSettings):
     @field_validator("unifi_url")
     @classmethod
     def validate_url(cls, v: str) -> str:
-        if not v.startswith(("http://", "https://")):
+        if v and not v.startswith(("http://", "https://")):
             raise ValueError("UNIFI_URL must start with http:// or https://")
-        return v.rstrip("/")
+        return v.rstrip("/") if v else v
+
+    def load_credentials(self) -> dict[str, Any]:
+        """Load credentials with env-first, config-file-fallback pattern.
+
+        Returns:
+            Dict with url, username, password, and site.
+        """
+        creds: dict[str, Any] = {}
+
+        # 1. FIRST: Check environment variables
+        if self.unifi_url:
+            creds["url"] = self.unifi_url
+        if self.unifi_username:
+            creds["username"] = self.unifi_username
+        if self.unifi_password:
+            creds["password"] = self.unifi_password
+        if self.unifi_site:
+            creds["site"] = self.unifi_site
+
+        # If we have all required creds from env, return early
+        if creds.get("url") and creds.get("username") and creds.get("password"):
+            logger.info("Using UniFi credentials from environment variables")
+            return creds
+
+        # 2. FALLBACK: Check credentials.json file
+        if CREDS_PATH.exists():
+            try:
+                file_creds: dict[str, Any] = json.loads(CREDS_PATH.read_text())
+
+                # Only use file values if NOT already set by env vars
+                if "url" in file_creds and not creds.get("url"):
+                    creds["url"] = file_creds["url"]
+                if "username" in file_creds and not creds.get("username"):
+                    creds["username"] = file_creds["username"]
+                if "password" in file_creds and not creds.get("password"):
+                    creds["password"] = file_creds["password"]
+                if "site" in file_creds and not creds.get("site"):
+                    creds["site"] = file_creds["site"]
+
+                logger.info(f"Loaded UniFi credentials from {CREDS_PATH}")
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"Failed to load {CREDS_PATH}: {e}")
+
+        if not (creds.get("url") and creds.get("username") and creds.get("password")):
+            logger.warning(
+                "No UniFi credentials configured. Set UNIFI_URL/UNIFI_USERNAME/UNIFI_PASSWORD "
+                f"env vars or create {CREDS_PATH}"
+            )
+
+        # Set default site if not specified
+        if not creds.get("site"):
+            creds["site"] = "default"
+
+        return creds
 
 
 def configure_logging(
