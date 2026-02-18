@@ -12,7 +12,27 @@ uvx unifi-mcp-server
 
 ## Configuration
 
-Configuration via environment variables. See `--help` for all options:
+**Preferred:** Configuration file at `~/.config/unifi/credentials.json` (chmod 600):
+
+```json
+{
+  "url": "https://unifi.example.com:8443",
+  "username": "admin",
+  "password": "your-password",
+  "site": "default"
+}
+```
+
+**Alternative:** Environment variables are also supported:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `UNIFI_URL` | UniFi Controller URL | `https://unifi.example.com:8443` |
+| `UNIFI_USERNAME` | Username | `admin` |
+| `UNIFI_PASSWORD` | Password | `your-password` |
+| `UNIFI_SITE` | Site name | `default` |
+
+See `--help` for additional options:
 
 ```bash
 unifi-mcp-server --help
