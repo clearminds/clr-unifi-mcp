@@ -17,11 +17,11 @@ CREDS_PATH = Path.home() / ".config" / "unifi" / "credentials.json"
 class Settings(BaseSettings):
     """Centralized configuration for UniFi MCP Server.
 
-    Configuration precedence: CLI > Environment > credentials.json > .env file > Defaults
+    Configuration precedence: CLI > credentials.json > Environment > .env file > Defaults
 
     Priority order for credentials:
-    1. Environment variables (UNIFI_URL, UNIFI_USERNAME, UNIFI_PASSWORD, UNIFI_SITE)
-    2. ~/.config/unifi/credentials.json
+    1. ~/.config/unifi/credentials.json
+    2. Environment variables (UNIFI_URL, UNIFI_USERNAME, UNIFI_PASSWORD, UNIFI_SITE) - override
     """
 
     unifi_url: str = ""
@@ -58,14 +58,14 @@ class Settings(BaseSettings):
         return v.rstrip("/") if v else v
 
     def load_credentials(self) -> dict[str, Any]:
-        """Load credentials with env-first, config-file-fallback pattern.
+        """Load credentials with config-file-first, env-override pattern.
 
         Returns:
             Dict with url, username, password, and site.
         """
         creds: dict[str, Any] = {}
 
-        # 1. FIRST: Check environment variables
+        # 1. FIRST: Load from environment variables (base/fallback)
         if self.unifi_url:
             creds["url"] = self.unifi_url
         if self.unifi_username:
@@ -75,24 +75,18 @@ class Settings(BaseSettings):
         if self.unifi_site:
             creds["site"] = self.unifi_site
 
-        # If we have all required creds from env, return early
-        if creds.get("url") and creds.get("username") and creds.get("password"):
-            logger.info("Using UniFi credentials from environment variables")
-            return creds
-
-        # 2. FALLBACK: Check credentials.json file
+        # 2. THEN: Override with credentials.json file (takes priority)
         if CREDS_PATH.exists():
             try:
                 file_creds: dict[str, Any] = json.loads(CREDS_PATH.read_text())
 
-                # Only use file values if NOT already set by env vars
-                if "url" in file_creds and not creds.get("url"):
+                if "url" in file_creds:
                     creds["url"] = file_creds["url"]
-                if "username" in file_creds and not creds.get("username"):
+                if "username" in file_creds:
                     creds["username"] = file_creds["username"]
-                if "password" in file_creds and not creds.get("password"):
+                if "password" in file_creds:
                     creds["password"] = file_creds["password"]
-                if "site" in file_creds and not creds.get("site"):
+                if "site" in file_creds:
                     creds["site"] = file_creds["site"]
 
                 logger.info(f"Loaded UniFi credentials from {CREDS_PATH}")

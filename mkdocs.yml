@@ -1,0 +1,4 @@
+site_name: clr-unifi-mcp
+nav:
+  - Overview: index.md
+  - TODO: todo.md
