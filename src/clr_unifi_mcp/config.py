@@ -68,6 +68,8 @@ class Settings(BaseSettings):
         # 1. FIRST: Load from environment variables (base/fallback)
         if self.unifi_url:
             creds["url"] = self.unifi_url
+        if self.unifi_api_key:
+            creds["api_key"] = self.unifi_api_key
         if self.unifi_username:
             creds["username"] = self.unifi_username
         if self.unifi_password:
@@ -82,6 +84,8 @@ class Settings(BaseSettings):
 
                 if "url" in file_creds:
                     creds["url"] = file_creds["url"]
+                if "api_key" in file_creds:
+                    creds["api_key"] = file_creds["api_key"]
                 if "username" in file_creds:
                     creds["username"] = file_creds["username"]
                 if "password" in file_creds:
@@ -93,9 +97,10 @@ class Settings(BaseSettings):
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Failed to load {CREDS_PATH}: {e}")
 
-        if not (creds.get("url") and creds.get("username") and creds.get("password")):
+        has_auth = creds.get("api_key") or (creds.get("username") and creds.get("password"))
+        if not (creds.get("url") and has_auth):
             logger.warning(
-                "No UniFi credentials configured. Set UNIFI_URL/UNIFI_USERNAME/UNIFI_PASSWORD "
+                "No UniFi credentials configured. Set UNIFI_URL + UNIFI_API_KEY (or UNIFI_USERNAME/UNIFI_PASSWORD) "
                 f"env vars or create {CREDS_PATH}"
             )
 

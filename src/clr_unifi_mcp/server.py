@@ -674,22 +674,24 @@ def main() -> None:
     configure_logging(settings.log_level)
     logger = logging.getLogger(__name__)
 
+    creds = settings.load_credentials()
+
     logger.info("Starting UniFi MCP Server")
     logger.info(
         "Config: url=%s site=%s auth=%s transport=%s",
-        settings.unifi_url,
-        settings.unifi_site,
-        "api_key" if settings.unifi_api_key else "password",
+        creds.get("url", ""),
+        creds.get("site", "default"),
+        "api_key" if creds.get("api_key") else "password",
         settings.transport,
     )
 
     try:
         client = UniFiClient(
-            url=settings.unifi_url,
-            site=settings.unifi_site,
-            api_key=settings.unifi_api_key,
-            username=settings.unifi_username,
-            password=settings.unifi_password,
+            url=creds.get("url", ""),
+            site=creds.get("site", "default"),
+            api_key=creds.get("api_key", ""),
+            username=creds.get("username", ""),
+            password=creds.get("password", ""),
         )
         logger.debug("UniFi client initialized")
     except Exception as e:
