@@ -33,7 +33,12 @@ class UniFiClient:
         self._authenticated = False
 
     def _login(self) -> None:
-        """Cookie-based login via /api/auth/login."""
+        """Perform cookie-based login via /api/auth/login.
+
+        Raises:
+            ValueError: If username or password is not configured.
+            httpx.HTTPStatusError: If the login request fails.
+        """
         if not self.username or not self.password:
             raise ValueError("Username and password required for cookie auth")
         logger.debug("Logging in to UniFi controller")
@@ -46,20 +51,36 @@ class UniFiClient:
         logger.debug("Login successful")
 
     def _resolve_url(self, endpoint: str) -> str:
-        """Resolve endpoint to full URL.
+        """Resolve an API endpoint to a full URL.
 
-        - Endpoints starting with /api/ or /proxy/ are used as-is
-        - Otherwise, prefixed with /proxy/network/api/s/{site}/
+        Endpoints starting with ``/api/`` or ``/proxy/`` are used as-is.
+        All other endpoints are prefixed with ``/proxy/network/api/s/{site}/``.
+
+        Args:
+            endpoint: The API endpoint path.
+
+        Returns:
+            The fully-qualified URL string.
         """
         if endpoint.startswith(("/api/", "/proxy/")):
             return f"{self.base_url}{endpoint}"
         return f"{self.base_url}/proxy/network/api/s/{self.site}/{endpoint}"
 
     def get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
-        """Make authenticated GET request.
+        """Make an authenticated GET request to the UniFi API.
 
-        Returns the parsed JSON response. For standard UniFi API responses,
-        the data is in the 'data' key.
+        Automatically handles authentication (API key header or cookie login)
+        and retries once on 401 for cookie-based sessions.
+
+        Args:
+            endpoint: The API endpoint path.
+            params: Optional query parameters.
+
+        Returns:
+            The parsed JSON response body.
+
+        Raises:
+            httpx.HTTPStatusError: If the request fails after authentication.
         """
         url = self._resolve_url(endpoint)
         headers: dict[str, str] = {}
@@ -83,7 +104,15 @@ class UniFiClient:
     def get_data(
         self, endpoint: str, params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
-        """GET and return the 'data' array from the response."""
+        """Make a GET request and return the ``data`` array from the response.
+
+        Args:
+            endpoint: The API endpoint path.
+            params: Optional query parameters.
+
+        Returns:
+            The list of result dictionaries from the ``data`` key.
+        """
         result = self.get(endpoint, params=params)
         if isinstance(result, dict):
             return result.get("data", [])

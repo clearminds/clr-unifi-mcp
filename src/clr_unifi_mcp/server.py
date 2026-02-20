@@ -122,7 +122,11 @@ def unifi_get_device(identifier: str) -> dict[str, Any]:
     Args:
         identifier: Device name or MAC address to search for.
 
-    Returns the complete device object with all fields.
+    Returns:
+        The complete device object with all fields.
+
+    Raises:
+        ValueError: If no device matches the identifier.
     """
     devices = client.get_data("stat/device")
     id_lower = identifier.lower()
@@ -178,7 +182,11 @@ def unifi_get_client(identifier: str) -> dict[str, Any]:
     Args:
         identifier: Hostname, IP address, or MAC address to search for.
 
-    Returns the complete client object with all fields.
+    Returns:
+        The complete client object with all fields.
+
+    Raises:
+        ValueError: If no client matches the identifier.
     """
     clients = client.get_data("stat/sta")
     id_lower = identifier.lower()
@@ -294,7 +302,11 @@ def unifi_client_dpi(identifier: str) -> dict[str, Any]:
     Args:
         identifier: Client MAC address.
 
-    Returns app-level traffic breakdown for the client.
+    Returns:
+        App-level traffic breakdown for the client.
+
+    Raises:
+        ValueError: If no DPI data exists for the given MAC address.
     """
     data = client.get_data("stat/stadpi")
     id_lower = identifier.lower()
