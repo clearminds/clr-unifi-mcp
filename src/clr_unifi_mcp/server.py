@@ -11,7 +11,7 @@ from clr_unifi_mcp.config import Settings, configure_logging
 from clr_unifi_mcp.unifi_client import UniFiClient
 
 
-def parse_cli_args() -> dict[str, Any]:
+def parse_cli_args() -> tuple[dict[str, Any], bool | None]:
     """Parse CLI arguments for configuration overrides."""
     parser = argparse.ArgumentParser(description="UniFi MCP Server")
 
@@ -30,6 +30,12 @@ def parse_cli_args() -> dict[str, Any]:
         type=str,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Log level",
+    )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        default=None,
+        help="Run in read-only mode (hide write tools)",
     )
 
     args = parser.parse_args()
@@ -50,11 +56,13 @@ def parse_cli_args() -> dict[str, Any]:
         if val is not None:
             overlay[key] = val
 
-    return overlay
+    return overlay, args.read_only
 
 
 mcp = FastMCP("UniFi")
 client: UniFiClient | None = None
+
+WRITE_TOOLS: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +683,7 @@ def main() -> None:
     """Main entry point for the UniFi MCP server."""
     global client
 
-    cli_overlay = parse_cli_args()
+    cli_overlay, cli_read_only = parse_cli_args()
 
     try:
         settings = Settings(**cli_overlay)
@@ -709,6 +717,12 @@ def main() -> None:
     except Exception as e:
         logger.error("Failed to initialize UniFi client: %s", e)
         sys.exit(1)
+
+    read_only = cli_read_only if cli_read_only is not None else settings.unifi_read_only
+    if read_only and WRITE_TOOLS:
+        for name in WRITE_TOOLS:
+            mcp.remove_tool(name)
+        logger.info("Read-only mode: %d write tools removed", len(WRITE_TOOLS))
 
     try:
         if settings.transport == "stdio":

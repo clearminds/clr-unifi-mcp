@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     unifi_username: str = ""
     unifi_password: str = ""
     unifi_site: str = "default"
+    unifi_read_only: bool = False
 
     transport: Literal["stdio", "http"] = "stdio"
     host: str = "127.0.0.1"
