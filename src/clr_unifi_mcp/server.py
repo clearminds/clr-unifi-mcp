@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 
 from clr_unifi_mcp.config import Settings, configure_logging
 from clr_unifi_mcp.unifi_client import UniFiClient
+from clr_unifi_mcp.middleware import ToolValidationMiddleware
 
 
 def parse_cli_args() -> tuple[dict[str, Any], bool | None]:
@@ -60,6 +61,7 @@ def parse_cli_args() -> tuple[dict[str, Any], bool | None]:
 
 
 mcp = FastMCP("UniFi")
+mcp.add_middleware(ToolValidationMiddleware())
 client: UniFiClient | None = None
 
 WRITE_TOOLS: list[str] = []
