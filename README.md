@@ -32,6 +32,14 @@ uvx clr-unifi-mcp
 | `UNIFI_PASSWORD` | Password | `your-password` |
 | `UNIFI_SITE` | Site name | `default` |
 
+Optional:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `UNIFI_READ_ONLY` | Run in read-only mode | `false` |
+| `TRANSPORT` | Transport protocol (`stdio` or `http`) | `stdio` |
+| `LOG_LEVEL` | Log level | `INFO` |
+
 See `--help` for additional options:
 
 ```bash

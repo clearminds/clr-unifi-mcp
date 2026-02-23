@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     unifi_site: str = "default"
     unifi_read_only: bool = False
 
+    @field_validator("unifi_read_only", mode="before")
+    @classmethod
+    def _empty_str_to_false(cls, v: Any) -> Any:
+        if v == "":
+            return False
+        return v
+
     transport: Literal["stdio", "http"] = "stdio"
     host: str = "127.0.0.1"
     port: int = 8000
