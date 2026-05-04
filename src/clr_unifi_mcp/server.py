@@ -66,13 +66,18 @@ client: UniFiClient | None = None
 
 WRITE_TOOLS: list[str] = []
 
+# Imported here (not at the top) on purpose: annotations.py needs ``mcp`` from
+# this module, so importing it before the ``mcp = FastMCP(...)`` line above
+# would be a circular import. Do not move.
+from clr_unifi_mcp.annotations import read_tool  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # System / Health
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_get_sysinfo() -> dict[str, Any]:
     """Get UniFi controller system information.
 
@@ -82,7 +87,7 @@ def unifi_get_sysinfo() -> dict[str, Any]:
     return data[0] if data else {}
 
 
-@mcp.tool
+@read_tool
 def unifi_get_health() -> list[dict[str, Any]]:
     """Get UniFi site health status.
 
@@ -97,7 +102,7 @@ def unifi_get_health() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_devices() -> list[dict[str, Any]]:
     """List all UniFi devices (APs, switches, gateways).
 
@@ -125,7 +130,7 @@ def unifi_list_devices() -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_get_device(identifier: str) -> dict[str, Any]:
     """Get full details for a specific UniFi device.
 
@@ -153,7 +158,7 @@ def unifi_get_device(identifier: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_clients() -> list[dict[str, Any]]:
     """List all active connected clients (wireless + wired).
 
@@ -185,7 +190,7 @@ def unifi_list_clients() -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_get_client(identifier: str) -> dict[str, Any]:
     """Get full details for a specific connected client.
 
@@ -214,7 +219,7 @@ def unifi_get_client(identifier: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_alerts(limit: int = 20) -> list[dict[str, Any]]:
     """List recent UniFi alarms/alerts.
 
@@ -241,7 +246,7 @@ def unifi_list_alerts(limit: int = 20) -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_list_events(limit: int = 20) -> list[dict[str, Any]]:
     """List recent UniFi events.
 
@@ -273,7 +278,7 @@ def unifi_list_events(limit: int = 20) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_top_apps(limit: int = 10) -> list[dict[str, Any]]:
     """Get top applications by bandwidth usage (DPI data).
 
@@ -305,7 +310,7 @@ def unifi_top_apps(limit: int = 10) -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_client_dpi(identifier: str) -> dict[str, Any]:
     """Get per-client DPI (Deep Packet Inspection) bandwidth stats.
 
@@ -331,7 +336,7 @@ def unifi_client_dpi(identifier: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_networks() -> list[dict[str, Any]]:
     """List all configured networks (VLANs, subnets).
 
@@ -355,7 +360,7 @@ def unifi_list_networks() -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_list_wlans() -> list[dict[str, Any]]:
     """List all configured WLANs/SSIDs.
 
@@ -383,7 +388,7 @@ def unifi_list_wlans() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_port_forwards() -> list[dict[str, Any]]:
     """List configured port forwarding rules.
 
@@ -406,7 +411,7 @@ def unifi_list_port_forwards() -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_list_firewall_rules() -> list[dict[str, Any]]:
     """List user-configured firewall rules.
 
@@ -429,7 +434,7 @@ def unifi_list_firewall_rules() -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_list_firewall_groups() -> list[dict[str, Any]]:
     """List firewall groups (address groups, port groups).
 
@@ -443,7 +448,7 @@ def unifi_list_firewall_groups() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_routes() -> list[dict[str, Any]]:
     """List active routes on the UniFi gateway."""
     return client.get_data("stat/routing")
@@ -454,7 +459,7 @@ def unifi_list_routes() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_rogue_aps(limit: int = 20) -> list[dict[str, Any]]:
     """List detected rogue/neighboring APs.
 
@@ -479,7 +484,7 @@ def unifi_list_rogue_aps(limit: int = 20) -> list[dict[str, Any]]:
     return result
 
 
-@mcp.tool
+@read_tool
 def unifi_get_dyndns() -> list[dict[str, Any]]:
     """Get Dynamic DNS status."""
     return client.get_data("stat/dynamicdns")
@@ -490,7 +495,7 @@ def unifi_get_dyndns() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_check_snmp() -> dict[str, Any]:
     """Audit SNMP contact/location configuration on all devices.
 
@@ -536,13 +541,13 @@ def unifi_check_snmp() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_list_port_profiles() -> list[dict[str, Any]]:
     """List switch port profiles."""
     return client.get_data("rest/portconf")
 
 
-@mcp.tool
+@read_tool
 def unifi_list_radius_profiles() -> list[dict[str, Any]]:
     """List RADIUS profiles."""
     return client.get_data("rest/radiusprofile")
@@ -553,7 +558,7 @@ def unifi_list_radius_profiles() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool
+@read_tool
 def unifi_dashboard() -> dict[str, Any]:
     """Get a comprehensive network dashboard overview.
 
