@@ -64,12 +64,10 @@ mcp = FastMCP("UniFi")
 mcp.add_middleware(ToolValidationMiddleware())
 client: UniFiClient | None = None
 
-WRITE_TOOLS: list[str] = []
-
 # Imported here (not at the top) on purpose: annotations.py needs ``mcp`` from
 # this module, so importing it before the ``mcp = FastMCP(...)`` line above
 # would be a circular import. Do not move.
-from clr_unifi_mcp.annotations import read_tool  # noqa: E402
+from clr_unifi_mcp.annotations import read_tool, remove_non_read_tools  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -726,10 +724,9 @@ def main() -> None:
         sys.exit(1)
 
     read_only = cli_read_only if cli_read_only is not None else settings.unifi_read_only
-    if read_only and WRITE_TOOLS:
-        for name in WRITE_TOOLS:
-            mcp.remove_tool(name)
-        logger.info("Read-only mode: %d write tools removed", len(WRITE_TOOLS))
+    if read_only:
+        removed = remove_non_read_tools(mcp)
+        logger.info("Read-only mode: %d non-read tools removed", removed)
 
     try:
         if settings.transport == "stdio":
