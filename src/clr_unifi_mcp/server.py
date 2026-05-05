@@ -684,28 +684,6 @@ def unifi_dashboard() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def init_composite() -> FastMCP:
-    """Initialize for composite mounting. Returns the FastMCP instance."""
-    global client
-
-    settings = Settings()
-    creds = settings.load_credentials()
-
-    client = UniFiClient(
-        url=creds.get("url", ""),
-        site=creds.get("site", "default"),
-        api_key=creds.get("api_key", ""),
-        username=creds.get("username", ""),
-        password=creds.get("password", ""),
-    )
-
-    if settings.unifi_read_only and WRITE_TOOLS:
-        for name in WRITE_TOOLS:
-            mcp.remove_tool(name)
-
-    return mcp
-
-
 def main() -> None:
     """Main entry point for the UniFi MCP server."""
     global client
