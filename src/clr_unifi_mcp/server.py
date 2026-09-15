@@ -76,7 +76,7 @@ from clr_unifi_mcp.annotations import read_tool, remove_non_read_tools  # noqa: 
 
 
 @read_tool
-def unifi_get_sysinfo() -> dict[str, Any]:
+def get_sysinfo() -> dict[str, Any]:
     """Get UniFi controller system information.
 
     Returns controller version, hostname, timezone, and other system details.
@@ -86,7 +86,7 @@ def unifi_get_sysinfo() -> dict[str, Any]:
 
 
 @read_tool
-def unifi_get_health() -> list[dict[str, Any]]:
+def get_health() -> list[dict[str, Any]]:
     """Get UniFi site health status.
 
     Returns status for each subsystem (wan, wlan, lan, vpn) including
@@ -101,7 +101,7 @@ def unifi_get_health() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_devices() -> list[dict[str, Any]]:
+def list_devices() -> list[dict[str, Any]]:
     """List all UniFi devices (APs, switches, gateways).
 
     Returns each device with name, model, IP, state, uptime (hours),
@@ -129,7 +129,7 @@ def unifi_list_devices() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_get_device(identifier: str) -> dict[str, Any]:
+def get_device(identifier: str) -> dict[str, Any]:
     """Get full details for a specific UniFi device.
 
     Args:
@@ -157,7 +157,7 @@ def unifi_get_device(identifier: str) -> dict[str, Any]:
 
 
 @read_tool
-def unifi_list_clients() -> list[dict[str, Any]]:
+def list_clients() -> list[dict[str, Any]]:
     """List all active connected clients (wireless + wired).
 
     Returns each client with hostname, IP, MAC, connection type,
@@ -189,7 +189,7 @@ def unifi_list_clients() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_get_client(identifier: str) -> dict[str, Any]:
+def get_client(identifier: str) -> dict[str, Any]:
     """Get full details for a specific connected client.
 
     Args:
@@ -218,7 +218,7 @@ def unifi_get_client(identifier: str) -> dict[str, Any]:
 
 
 @read_tool
-def unifi_list_alerts(limit: int = 20) -> list[dict[str, Any]]:
+def list_alerts(limit: int = 20) -> list[dict[str, Any]]:
     """List recent UniFi alarms/alerts.
 
     Args:
@@ -245,7 +245,7 @@ def unifi_list_alerts(limit: int = 20) -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_events(limit: int = 20) -> list[dict[str, Any]]:
+def list_events(limit: int = 20) -> list[dict[str, Any]]:
     """List recent UniFi events.
 
     Args:
@@ -277,7 +277,7 @@ def unifi_list_events(limit: int = 20) -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_top_apps(limit: int = 10) -> list[dict[str, Any]]:
+def top_apps(limit: int = 10) -> list[dict[str, Any]]:
     """Get top applications by bandwidth usage (DPI data).
 
     Args:
@@ -309,7 +309,7 @@ def unifi_top_apps(limit: int = 10) -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_client_dpi(identifier: str) -> dict[str, Any]:
+def client_dpi(identifier: str) -> dict[str, Any]:
     """Get per-client DPI (Deep Packet Inspection) bandwidth stats.
 
     Args:
@@ -335,7 +335,7 @@ def unifi_client_dpi(identifier: str) -> dict[str, Any]:
 
 
 @read_tool
-def unifi_list_networks() -> list[dict[str, Any]]:
+def list_networks() -> list[dict[str, Any]]:
     """List all configured networks (VLANs, subnets).
 
     Returns network name, VLAN ID, subnet, purpose, DHCP status,
@@ -359,7 +359,7 @@ def unifi_list_networks() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_wlans() -> list[dict[str, Any]]:
+def list_wlans() -> list[dict[str, Any]]:
     """List all configured WLANs/SSIDs.
 
     Returns SSID name, enabled status, security mode, band, and VLAN.
@@ -387,7 +387,7 @@ def unifi_list_wlans() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_port_forwards() -> list[dict[str, Any]]:
+def list_port_forwards() -> list[dict[str, Any]]:
     """List configured port forwarding rules.
 
     Returns rule name, enabled status, protocol, destination, and ports.
@@ -410,7 +410,7 @@ def unifi_list_port_forwards() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_firewall_rules() -> list[dict[str, Any]]:
+def list_firewall_rules() -> list[dict[str, Any]]:
     """List user-configured firewall rules.
 
     Returns rule name, enabled status, action, protocol, and source/destination.
@@ -433,7 +433,7 @@ def unifi_list_firewall_rules() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_firewall_groups() -> list[dict[str, Any]]:
+def list_firewall_groups() -> list[dict[str, Any]]:
     """List firewall groups (address groups, port groups).
 
     Returns group name, type, and members.
@@ -447,7 +447,7 @@ def unifi_list_firewall_groups() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_routes() -> list[dict[str, Any]]:
+def list_routes() -> list[dict[str, Any]]:
     """List active routes on the UniFi gateway."""
     return client.get_data("stat/routing")
 
@@ -458,7 +458,7 @@ def unifi_list_routes() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_list_rogue_aps(limit: int = 20) -> list[dict[str, Any]]:
+def list_rogue_aps(limit: int = 20) -> list[dict[str, Any]]:
     """List detected rogue/neighboring APs.
 
     Args:
@@ -483,7 +483,7 @@ def unifi_list_rogue_aps(limit: int = 20) -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_get_dyndns() -> list[dict[str, Any]]:
+def get_dyndns() -> list[dict[str, Any]]:
     """Get Dynamic DNS status."""
     return client.get_data("stat/dynamicdns")
 
@@ -494,7 +494,7 @@ def unifi_get_dyndns() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_check_snmp() -> dict[str, Any]:
+def check_snmp() -> dict[str, Any]:
     """Audit SNMP contact/location configuration on all devices.
 
     Returns a summary of devices with and without SNMP fields configured,
@@ -540,13 +540,13 @@ def unifi_check_snmp() -> dict[str, Any]:
 
 
 @read_tool
-def unifi_list_port_profiles() -> list[dict[str, Any]]:
+def list_port_profiles() -> list[dict[str, Any]]:
     """List switch port profiles."""
     return client.get_data("rest/portconf")
 
 
 @read_tool
-def unifi_list_radius_profiles() -> list[dict[str, Any]]:
+def list_radius_profiles() -> list[dict[str, Any]]:
     """List RADIUS profiles."""
     return client.get_data("rest/radiusprofile")
 
@@ -557,7 +557,7 @@ def unifi_list_radius_profiles() -> list[dict[str, Any]]:
 
 
 @read_tool
-def unifi_dashboard() -> dict[str, Any]:
+def dashboard() -> dict[str, Any]:
     """Get a comprehensive network dashboard overview.
 
     Returns a composite view with system info, health, device summary,
