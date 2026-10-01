@@ -455,7 +455,7 @@ def client_dpi(identifier: str) -> dict[str, Any]:
 
 
 @read_tool
-def _debug_report(
+def debug_report(
     interval: str = "hourly",
     report_type: str = "user",
     hours: int = 24,
