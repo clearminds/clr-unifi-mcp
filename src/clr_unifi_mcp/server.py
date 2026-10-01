@@ -472,7 +472,14 @@ def get_client_history(
         hours: How far back to look, regardless of interval (default 24).
 
     Returns periods oldest-first, each with time, rx_gb, tx_gb, and total_gb.
+
+    Raises:
+        ValueError: If interval isn't one of "5minutes", "hourly", "daily".
     """
+    if interval not in ("5minutes", "hourly", "daily"):
+        raise ValueError(
+            f'interval must be "5minutes", "hourly", or "daily", got {interval!r}'
+        )
     now_ms = int(time.time() * 1000)
     body = {
         "attrs": ["bytes", "rx_bytes", "tx_bytes", "time"],
