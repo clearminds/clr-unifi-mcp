@@ -280,27 +280,25 @@ def get_client(identifier: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _parameters_value(entry: dict[str, Any], *names: str) -> str:
-    """Pull a named value out of a system-log entry's ``parameters``.
+def _param_entity(entry: dict[str, Any], *names: str) -> dict[str, Any]:
+    """Pull a named entity out of a system-log entry's ``parameters``.
 
-    The v2 system-log API's parameters field isn't fully documented and
-    has been observed as both a flat dict (``{"CLIENT": "..."}``) and a
-    list of ``{"key"/"name": ..., "value": ...}`` objects -- handle both
-    rather than assume one.
+    Confirmed live against this server's own controller: ``parameters`` is
+    a flat dict whose CLIENT/DEVICE values are themselves nested objects
+    (``{"id": "<mac>", "name": ..., "hostname": ..., "ip": ...}``), not
+    plain strings -- there is no separate "message" field to fall back on,
+    so the readable text below is built from these entities.
     """
     params = entry.get("parameters")
-    if isinstance(params, dict):
-        for name in names:
-            if params.get(name):
-                return str(params[name])
-    elif isinstance(params, list):
-        for item in params:
-            if not isinstance(item, dict):
-                continue
-            key = item.get("key") or item.get("name") or ""
-            if key in names and item.get("value"):
-                return str(item["value"])
-    return ""
+    if not isinstance(params, dict):
+        return {}
+    for name in names:
+        val = params.get(name)
+        if isinstance(val, dict):
+            return val
+        if isinstance(val, str) and val:
+            return {"id": val}
+    return {}
 
 
 def _system_log(
@@ -315,9 +313,8 @@ def _system_log(
             server uses; UniFi also exposes "admin-activity" and others.
         hours: How far back to look.
         limit: Max entries to return, most recent first.
-        mac: Optional client MAC to filter to. Matched against a CLIENT/MAC
-            parameter when present, falling back to a substring match in
-            the message text (the parameters shape isn't fully documented).
+        mac: Optional client MAC to filter to, matched against the entry's
+            CLIENT parameter.
     """
     now_ms = int(time.time() * 1000)
     body = {
@@ -333,19 +330,33 @@ def _system_log(
     mac_l = mac.lower() if mac else None
     result = []
     for e in entries:
-        e_mac = _parameters_value(e, "CLIENT", "MAC", "USER").lower()
-        message = e.get("message", "")
-        if mac_l and mac_l != e_mac and mac_l not in message.lower():
+        client_entity = _param_entity(e, "CLIENT", "MAC", "USER")
+        e_mac = client_entity.get("id", "").lower()
+        if mac_l and mac_l != e_mac:
             continue
+        device_entity = _param_entity(e, "DEVICE", "AP", "SWITCH", "GW")
+        client_name = (
+            client_entity.get("hostname")
+            or client_entity.get("name")
+            or e_mac
+            or ""
+        )
+        device_name = device_entity.get("name", "")
+        key = e.get("key", "")
+        message = key.replace("_", " ").title()
+        if client_name:
+            message += f" -- {client_name}"
+        if device_name:
+            message += f" @ {device_name}"
         ts = e.get("timestamp")
         result.append(
             {
                 "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(ts / 1000))
                 if ts
                 else "",
-                "key": e.get("key", ""),
+                "key": key,
                 "message": message,
-                "device": _parameters_value(e, "DEVICE", "AP", "SWITCH", "GW"),
+                "device": device_name,
                 "mac": e_mac,
             }
         )
