@@ -165,13 +165,16 @@ def list_clients(
     hostname: str | None = None,
     ip: str | None = None,
     ap: str | None = None,
+    ssid: str | None = None,
 ) -> list[dict[str, Any]]:
     """List active connected clients (wireless + wired), optionally filtered.
 
     Returns each client with hostname, IP, MAC, connection type, AP name,
     AP MAC, signal strength, data rates, network name, VLAN ID, and the
     802.1X identity (username) for dot1x-authenticated connections, when
-    there is one.
+    there is one. Wireless clients also carry the SSID, radio band, channel,
+    the controller's satisfaction score (0-100) and the TX retry percentage;
+    these are None/"" for wired clients or when the controller reports none.
 
     Args:
         network: Case-insensitive substring match against the network name
@@ -184,6 +187,10 @@ def list_clients(
         ip: Exact IP address match.
         ap: Case-insensitive substring match against the AP's name or MAC
             (wireless clients only).
+        ssid: Case-insensitive exact SSID match (wireless clients only),
+            e.g. "L26_x". With 802.1X dynamic VLANs the SSID is the reliable
+            way to pick out a Wi-Fi network; ``network``/``vlan_id`` follow
+            the VLAN the user was placed on.
 
     All filters are ANDed together when more than one is given.
     """
@@ -202,6 +209,7 @@ def list_clients(
     mac_f = mac.lower() if mac else None
     hostname_f = hostname.lower() if hostname else None
     ap_f = ap.lower() if ap else None
+    ssid_f = ssid.lower() if ssid else None
 
     result = []
     for c in clients:
@@ -231,6 +239,15 @@ def list_clients(
             continue
         if ap_f and ap_f not in c_ap_name.lower() and ap_f not in c_ap_mac.lower():
             continue
+        c_ssid = "" if is_wired else c.get("essid", "")
+        if ssid_f and c_ssid.lower() != ssid_f:
+            continue
+        tx_packets = c.get("tx_packets") or 0
+        tx_retry_pct = (
+            round(100 * (c.get("tx_retries") or 0) / tx_packets, 1)
+            if tx_packets and not is_wired
+            else None
+        )
 
         result.append(
             {
@@ -246,6 +263,11 @@ def list_clients(
                 "network": c_network,
                 "vlan_id": c_vlan,
                 "dot1x_identity": c_dot1x,
+                "ssid": c_ssid,
+                "radio": "" if is_wired else c.get("radio", ""),
+                "channel": None if is_wired else c.get("channel"),
+                "satisfaction": None if is_wired else c.get("satisfaction"),
+                "tx_retry_pct": tx_retry_pct,
             }
         )
     return result
@@ -275,7 +297,8 @@ def get_client(identifier: str) -> dict[str, Any]:
         (from stat/sta) has live fields like signal/rx_bytes; an offline
         client's (from rest/user) has "online": false plus its last-known
         state (last_ip, disconnect_timestamp, last_1x_identity, etc.) --
-        UniFi keeps per-client history there even while disconnected.
+        UniFi keeps per-client history there even while disconnected -- and
+        "ssid", the name of the WLAN it last used ("" if unknown).
 
     Raises:
         ValueError: If no client, online or previously known, matches.
@@ -285,7 +308,19 @@ def get_client(identifier: str) -> dict[str, Any]:
         return found
     found = _find_client(identifier, "rest/user")
     if found is not None:
-        return {**found, "online": False}
+        # Offline records only carry wlanconf_id; resolve it so callers get the
+        # SSID the client last used without a separate list_wlans join.
+        ssid = ""
+        if found.get("wlanconf_id"):
+            ssid = next(
+                (
+                    w.get("name", "")
+                    for w in client.get_data("rest/wlanconf")
+                    if w.get("_id") == found["wlanconf_id"]
+                ),
+                "",
+            )
+        return {**found, "online": False, "ssid": ssid}
     raise ValueError(f"Client not found: {identifier}")
 
 
@@ -315,11 +350,48 @@ def _param_entity(entry: dict[str, Any], *names: str) -> dict[str, Any]:
     return {}
 
 
+_LOG_PAGE_SIZE = 200
+# Hard cap of 5000 entries per call, so a wide window can't hang the tool.
+_LOG_MAX_PAGES = 25
+
+
+def _param_text(params: Any, *needles: str) -> str:
+    """First string value in ``params`` whose key contains any of ``needles``.
+
+    Entity-style values ({"id": ..., "name": ...}) yield their name. The exact
+    parameter keys differ between controller versions, so this matches loosely
+    and ``list_events(raw=True)`` exposes the untouched ``parameters`` for
+    checking what a given controller actually sends.
+    """
+    if not isinstance(params, dict):
+        return ""
+    for key, val in params.items():
+        if not any(n in key.lower() for n in needles):
+            continue
+        if isinstance(val, str) and val:
+            return val
+        if isinstance(val, dict):
+            text = val.get("name") or val.get("id")
+            if isinstance(text, str) and text:
+                return text
+    return ""
+
+
 def _system_log(
-    category: str, hours: int, limit: int, mac: str | None
+    category: str,
+    hours: int,
+    limit: int,
+    mac: str | None,
+    key: str | None = None,
+    ap: str | None = None,
+    ssid: str | None = None,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
     """Query the v2 system-log API that replaced stat/alarm and stat/event
     on UniFi Network 10.x (the legacy endpoints now 404 there).
+
+    Pages through the log (newest first) until ``limit`` matching entries are
+    found, the log runs out, or ``_LOG_MAX_PAGES`` is reached.
 
     Args:
         category: Log category -- "all" (general activity) or
@@ -329,52 +401,77 @@ def _system_log(
         limit: Max entries to return, most recent first.
         mac: Optional client MAC to filter to, matched against the entry's
             CLIENT parameter.
+        key: Optional case-insensitive substring of the event key
+            (e.g. "ROAM", "DISCONNECT"); several can be given comma-separated.
+        ap: Optional case-insensitive substring of the device (AP) name.
+        ssid: Optional case-insensitive exact SSID; entries that carry no
+            SSID never match.
+        raw: Include the entry's untouched ``parameters`` as ``params``.
     """
     now_ms = int(time.time() * 1000)
-    body = {
-        "timestampFrom": now_ms - hours * 3600 * 1000,
-        "timestampTo": now_ms,
-        "pageSize": 200,
-        "pageNumber": 0,
-    }
-    entries = client.post_data(
-        f"/proxy/network/v2/api/site/{client.site}/system-log/{category}",
-        json=body,
-    )
     mac_l = mac.lower() if mac else None
-    result = []
-    for e in entries:
-        client_entity = _param_entity(e, "CLIENT", "MAC", "USER")
-        e_mac = client_entity.get("id", "").lower()
-        if mac_l and mac_l != e_mac:
-            continue
-        device_entity = _param_entity(e, "DEVICE", "AP", "SWITCH", "GW")
-        client_name = (
-            client_entity.get("hostname")
-            or client_entity.get("name")
-            or e_mac
-            or ""
-        )
-        device_name = device_entity.get("name", "")
-        key = e.get("key", "")
-        message = key.replace("_", " ").title()
-        if client_name:
-            message += f" -- {client_name}"
-        if device_name:
-            message += f" @ {device_name}"
-        ts = e.get("timestamp")
-        result.append(
-            {
+    keys_l = [k.strip().lower() for k in key.split(",") if k.strip()] if key else []
+    ap_l = ap.lower() if ap else None
+    ssid_l = ssid.lower() if ssid else None
+    url = f"/proxy/network/v2/api/site/{client.site}/system-log/{category}"
+
+    result: list[dict[str, Any]] = []
+    for page in range(_LOG_MAX_PAGES):
+        body = {
+            "timestampFrom": now_ms - hours * 3600 * 1000,
+            "timestampTo": now_ms,
+            "pageSize": _LOG_PAGE_SIZE,
+            "pageNumber": page,
+        }
+        entries = client.post_data(url, json=body)
+        if not entries:
+            break
+        for e in entries:
+            params = e.get("parameters")
+            client_entity = _param_entity(e, "CLIENT", "MAC", "USER")
+            e_mac = client_entity.get("id", "").lower()
+            if mac_l and mac_l != e_mac:
+                continue
+            e_key = e.get("key", "")
+            if keys_l and not any(k in e_key.lower() for k in keys_l):
+                continue
+            device_entity = _param_entity(e, "DEVICE", "AP", "SWITCH", "GW")
+            device_name = device_entity.get("name", "")
+            if ap_l and ap_l not in device_name.lower():
+                continue
+            e_ssid = _param_text(params, "ssid", "wlan")
+            if ssid_l and e_ssid.lower() != ssid_l:
+                continue
+            client_name = (
+                client_entity.get("hostname")
+                or client_entity.get("name")
+                or e_mac
+                or ""
+            )
+            message = e_key.replace("_", " ").title()
+            if client_name:
+                message += f" -- {client_name}"
+            if device_name:
+                message += f" @ {device_name}"
+            ts = e.get("timestamp")
+            row: dict[str, Any] = {
                 "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(ts / 1000))
                 if ts
                 else "",
-                "key": key,
+                # Epoch seconds: unambiguous, unlike "time" (server-local, no zone).
+                "timestamp": ts // 1000 if ts else None,
+                "key": e_key,
                 "message": message,
                 "device": device_name,
                 "mac": e_mac,
+                "ssid": e_ssid,
             }
-        )
-        if len(result) >= limit:
+            if raw:
+                row["params"] = params
+            result.append(row)
+            if len(result) >= limit:
+                return result
+        if len(entries) < _LOG_PAGE_SIZE:
             break
     return result
 
@@ -394,9 +491,20 @@ def list_alerts(limit: int = 20, hours: int = 24) -> list[dict[str, Any]]:
 
 @read_tool
 def list_events(
-    limit: int = 20, hours: int = 24, mac: str | None = None
+    limit: int = 20,
+    hours: int = 24,
+    mac: str | None = None,
+    key: str | None = None,
+    ap: str | None = None,
+    ssid: str | None = None,
+    raw: bool = False,
 ) -> list[dict[str, Any]]:
     """List recent UniFi events -- connects, disconnects, roams, auth failures, etc.
+
+    Pages through the whole window, so a large ``limit`` really reaches back
+    ``hours`` (capped at 5000 entries per call). Filters are applied
+    server-side before ``limit``, which makes them the way to dig through a
+    noisy site (e.g. IoT devices reconnecting every few minutes).
 
     Args:
         limit: Maximum number of events to return (default 20).
@@ -404,10 +512,18 @@ def list_events(
         mac: Optional client MAC to filter to -- use this to pull one
             device's connection history (roaming, drops, auth failures)
             instead of scrolling the whole site's activity log.
+        key: Optional event-key substring, case-insensitive; comma-separate
+            several (e.g. "ROAM,DISCONNECT" or "AUTH,RADIUS").
+        ap: Optional substring of the AP name the event happened on.
+        ssid: Optional exact SSID. Only events whose log entry carries an SSID
+            can match -- use ``raw=True`` to see whether your controller
+            includes one.
+        raw: Include each entry's untouched ``parameters`` as ``params``.
 
-    Returns events sorted by most recent with time, key, message, device, and mac.
+    Returns events sorted by most recent with time, timestamp (epoch seconds),
+    key, message, device, mac and ssid ("" when the entry has none).
     """
-    return _system_log("all", hours, limit, mac)
+    return _system_log("all", hours, limit, mac, key=key, ap=ap, ssid=ssid, raw=raw)
 
 
 # ---------------------------------------------------------------------------
