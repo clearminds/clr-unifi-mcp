@@ -454,6 +454,31 @@ def client_dpi(identifier: str) -> dict[str, Any]:
     raise ValueError(f"No DPI data for client: {identifier}")
 
 
+@read_tool
+def _debug_report(
+    interval: str = "hourly",
+    report_type: str = "user",
+    hours: int = 24,
+    mac: str | None = None,
+    use_macs_list: bool = False,
+) -> Any:
+    """TEMPORARY debug probe for stat/report/{interval}.{report_type} -- live
+    schema for this endpoint is undocumented/contradictory across sources
+    (mac vs macs, unknown timestamp units). Remove once get_client_history
+    ships for real. Returns the raw response, not just the data array, so
+    an error body is visible too.
+    """
+    now_ms = int(time.time() * 1000)
+    body: dict[str, Any] = {
+        "attrs": ["bytes", "rx_bytes", "tx_bytes", "time"],
+        "start": now_ms - hours * 3600 * 1000,
+        "end": now_ms,
+    }
+    if mac:
+        body["macs" if use_macs_list else "mac"] = [mac] if use_macs_list else mac
+    return client.post(f"stat/report/{interval}.{report_type}", json=body)
+
+
 # ---------------------------------------------------------------------------
 # Networks / WLANs
 # ---------------------------------------------------------------------------
