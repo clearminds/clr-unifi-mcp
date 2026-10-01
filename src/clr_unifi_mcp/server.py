@@ -157,32 +157,94 @@ def get_device(identifier: str) -> dict[str, Any]:
 
 
 @read_tool
-def list_clients() -> list[dict[str, Any]]:
-    """List all active connected clients (wireless + wired).
+def list_clients(
+    network: str | None = None,
+    vlan_id: int | None = None,
+    mac: str | None = None,
+    hostname: str | None = None,
+    ip: str | None = None,
+    ap: str | None = None,
+) -> list[dict[str, Any]]:
+    """List active connected clients (wireless + wired), optionally filtered.
 
-    Returns each client with hostname, IP, MAC, connection type,
-    AP name, signal strength, and data rates.
+    Returns each client with hostname, IP, MAC, connection type, AP name,
+    AP MAC, signal strength, data rates, network name, VLAN ID, and the
+    802.1X identity (username) for dot1x-authenticated connections, when
+    there is one.
+
+    Args:
+        network: Case-insensitive substring match against the network name
+            (e.g. "Tenants", or the full "{nn-14} L26 Tenants").
+        vlan_id: Exact VLAN ID match (e.g. 2000). Use this instead of
+            `network` when you already know the VLAN and want to skip
+            fetching the full, unfiltered client list.
+        mac: Exact MAC address match, case-insensitive.
+        hostname: Case-insensitive substring match against hostname.
+        ip: Exact IP address match.
+        ap: Case-insensitive substring match against the AP's name or MAC
+            (wireless clients only).
+
+    All filters are ANDed together when more than one is given.
     """
     clients = client.get_data("stat/sta")
+
+    # Raw client objects carry ap_mac (not a name) -- joined against
+    # stat/device (same data list_devices already uses) to resolve it.
+    # vlan, by contrast, is already a plain field on the client object, no
+    # join against rest/networkconf needed.
+    ap_names = {
+        d.get("mac", "").lower(): d.get("name") or d.get("mac", "")
+        for d in client.get_data("stat/device")
+    }
+
+    network_f = network.lower() if network else None
+    mac_f = mac.lower() if mac else None
+    hostname_f = hostname.lower() if hostname else None
+    ap_f = ap.lower() if ap else None
+
     result = []
     for c in clients:
         rx_rate = c.get("rx_rate", 0)
         tx_rate = c.get("tx_rate", 0)
+        is_wired = c.get("is_wired")
+        c_hostname = c.get("hostname") or c.get("name") or c.get("mac", "unknown")
+        c_mac = c.get("mac", "")
+        c_ip = c.get("ip", "")
+        c_network = c.get("network", "")
+        c_vlan = c.get("vlan", "")
+        c_ap_mac = c.get("ap_mac", "")
+        c_ap_name = ap_names.get(c_ap_mac.lower(), "") if not is_wired else ""
+        # last_1x_identity persists briefly after a dot1x client drops off,
+        # so prefer the live field but fall back to it rather than go blank.
+        c_dot1x = c.get("1x_identity") or c.get("last_1x_identity") or ""
+
+        if network_f and network_f not in c_network.lower():
+            continue
+        if vlan_id is not None and str(c_vlan) != str(vlan_id):
+            continue
+        if mac_f and mac_f != c_mac.lower():
+            continue
+        if hostname_f and hostname_f not in c_hostname.lower():
+            continue
+        if ip and ip != c_ip:
+            continue
+        if ap_f and ap_f not in c_ap_name.lower() and ap_f not in c_ap_mac.lower():
+            continue
+
         result.append(
             {
-                "hostname": c.get("hostname")
-                or c.get("name")
-                or c.get("mac", "unknown"),
-                "ip": c.get("ip", ""),
-                "mac": c.get("mac", ""),
-                "type": "Wired" if c.get("is_wired") else "WiFi",
-                "ap_name": c.get("ap_name", ""),
-                "signal": f"{c.get('signal', 0)} dBm"
-                if not c.get("is_wired")
-                else "N/A",
+                "hostname": c_hostname,
+                "ip": c_ip,
+                "mac": c_mac,
+                "type": "Wired" if is_wired else "WiFi",
+                "ap_name": c_ap_name,
+                "ap_mac": c_ap_mac if not is_wired else "",
+                "signal": f"{c.get('signal', 0)} dBm" if not is_wired else "N/A",
                 "rx_mbps": rx_rate // 1000 if rx_rate else 0,
                 "tx_mbps": tx_rate // 1000 if tx_rate else 0,
-                "network": c.get("network", ""),
+                "network": c_network,
+                "vlan_id": c_vlan,
+                "dot1x_identity": c_dot1x,
             }
         )
     return result
