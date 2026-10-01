@@ -251,27 +251,41 @@ def list_clients(
     return result
 
 
+def _find_client(identifier: str, endpoint: str) -> dict[str, Any] | None:
+    id_lower = identifier.lower()
+    for c in client.get_data(endpoint):
+        hostname = (c.get("hostname") or c.get("name") or "").lower()
+        ip = (c.get("ip") or c.get("last_ip") or "").lower()
+        mac = (c.get("mac") or "").lower()
+        if id_lower in (hostname, ip, mac) or id_lower in hostname:
+            return c
+    return None
+
+
 @read_tool
 def get_client(identifier: str) -> dict[str, Any]:
-    """Get full details for a specific connected client.
+    """Get full details for a specific client -- connected now, or recently
+    seen but currently offline.
 
     Args:
         identifier: Hostname, IP address, or MAC address to search for.
 
     Returns:
-        The complete client object with all fields.
+        The complete client object. A currently-connected client's object
+        (from stat/sta) has live fields like signal/rx_bytes; an offline
+        client's (from rest/user) has "online": false plus its last-known
+        state (last_ip, disconnect_timestamp, last_1x_identity, etc.) --
+        UniFi keeps per-client history there even while disconnected.
 
     Raises:
-        ValueError: If no client matches the identifier.
+        ValueError: If no client, online or previously known, matches.
     """
-    clients = client.get_data("stat/sta")
-    id_lower = identifier.lower()
-    for c in clients:
-        hostname = (c.get("hostname") or c.get("name") or "").lower()
-        ip = (c.get("ip") or "").lower()
-        mac = (c.get("mac") or "").lower()
-        if id_lower in (hostname, ip, mac) or id_lower in hostname:
-            return c
+    found = _find_client(identifier, "stat/sta")
+    if found is not None:
+        return found
+    found = _find_client(identifier, "rest/user")
+    if found is not None:
+        return {**found, "online": False}
     raise ValueError(f"Client not found: {identifier}")
 
 

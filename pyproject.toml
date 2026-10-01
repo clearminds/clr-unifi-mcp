@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clr-unifi-mcp"
-version = "2.3.0"
+version = "2.4.0"
 description = "A read-only MCP server for UniFi Network"
 requires-python = ">=3.11"
 license = "MIT"
