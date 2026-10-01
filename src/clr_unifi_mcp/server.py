@@ -763,7 +763,7 @@ def dashboard() -> dict[str, Any]:
     networks = client.get_data("rest/networkconf")
     wlans = client.get_data("rest/wlanconf")
     port_forwards = client.get_data("rest/portforward")
-    alarms = client.get_data("stat/alarm")
+    recent_alarms = _system_log("device-alert", hours=24, limit=10, mac=None)
 
     # Device summary
     device_summary = []
@@ -839,17 +839,6 @@ def dashboard() -> dict[str, Any]:
                 "proto": p.get("proto", ""),
                 "fwd": f"{p.get('fwd', '')}:{p.get('fwd_port', '')}",
                 "dst_port": p.get("dst_port", ""),
-            }
-        )
-
-    # Recent alarms
-    recent_alarms = []
-    for a in alarms[:10]:
-        dt = a.get("datetime", a.get("time", ""))
-        recent_alarms.append(
-            {
-                "time": dt[:16].replace("T", " ") if dt else "",
-                "message": a.get("msg", ""),
             }
         )
 
