@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+import time
 from typing import Any
 
 from fastmcp import FastMCP
@@ -279,58 +280,109 @@ def get_client(identifier: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _parameters_value(entry: dict[str, Any], *names: str) -> str:
+    """Pull a named value out of a system-log entry's ``parameters``.
+
+    The v2 system-log API's parameters field isn't fully documented and
+    has been observed as both a flat dict (``{"CLIENT": "..."}``) and a
+    list of ``{"key"/"name": ..., "value": ...}`` objects -- handle both
+    rather than assume one.
+    """
+    params = entry.get("parameters")
+    if isinstance(params, dict):
+        for name in names:
+            if params.get(name):
+                return str(params[name])
+    elif isinstance(params, list):
+        for item in params:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key") or item.get("name") or ""
+            if key in names and item.get("value"):
+                return str(item["value"])
+    return ""
+
+
+def _system_log(
+    category: str, hours: int, limit: int, mac: str | None
+) -> list[dict[str, Any]]:
+    """Query the v2 system-log API that replaced stat/alarm and stat/event
+    on UniFi Network 10.x (the legacy endpoints now 404 there).
+
+    Args:
+        category: Log category -- "all" (general activity) or
+            "device-alert" (device-level alerts/flaps) are the ones this
+            server uses; UniFi also exposes "admin-activity" and others.
+        hours: How far back to look.
+        limit: Max entries to return, most recent first.
+        mac: Optional client MAC to filter to. Matched against a CLIENT/MAC
+            parameter when present, falling back to a substring match in
+            the message text (the parameters shape isn't fully documented).
+    """
+    now_ms = int(time.time() * 1000)
+    body = {
+        "timestampFrom": now_ms - hours * 3600 * 1000,
+        "timestampTo": now_ms,
+        "pageSize": 200,
+        "pageNumber": 0,
+    }
+    entries = client.post_data(
+        f"/proxy/network/v2/api/site/{client.site}/system-log/{category}",
+        json=body,
+    )
+    mac_l = mac.lower() if mac else None
+    result = []
+    for e in entries:
+        e_mac = _parameters_value(e, "CLIENT", "MAC", "USER").lower()
+        message = e.get("message", "")
+        if mac_l and mac_l != e_mac and mac_l not in message.lower():
+            continue
+        ts = e.get("timestamp")
+        result.append(
+            {
+                "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(ts / 1000))
+                if ts
+                else "",
+                "key": e.get("key", ""),
+                "message": message,
+                "device": _parameters_value(e, "DEVICE", "AP", "SWITCH", "GW"),
+                "mac": e_mac,
+            }
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+
 @read_tool
-def list_alerts(limit: int = 20) -> list[dict[str, Any]]:
-    """List recent UniFi alarms/alerts.
+def list_alerts(limit: int = 20, hours: int = 24) -> list[dict[str, Any]]:
+    """List recent UniFi device alerts (port flaps, device issues, etc.).
 
     Args:
         limit: Maximum number of alerts to return (default 20).
+        hours: How many hours back to search (default 24).
 
-    Returns alerts sorted by most recent, with time, key, message, and device name.
+    Returns alerts sorted by most recent, with time, key, message, device, and mac.
     """
-    alarms = client.get_data("stat/alarm")
-    result = []
-    for a in alarms[:limit]:
-        dt = a.get("datetime", a.get("time", ""))
-        result.append(
-            {
-                "time": dt[:16].replace("T", " ") if dt else "",
-                "key": a.get("key", ""),
-                "message": a.get("msg", ""),
-                "device": a.get("ap_name")
-                or a.get("gw_name")
-                or a.get("sw_name")
-                or "",
-            }
-        )
-    return result
+    return _system_log("device-alert", hours, limit, None)
 
 
 @read_tool
-def list_events(limit: int = 20) -> list[dict[str, Any]]:
-    """List recent UniFi events.
+def list_events(
+    limit: int = 20, hours: int = 24, mac: str | None = None
+) -> list[dict[str, Any]]:
+    """List recent UniFi events -- connects, disconnects, roams, auth failures, etc.
 
     Args:
         limit: Maximum number of events to return (default 20).
+        hours: How many hours back to search (default 24).
+        mac: Optional client MAC to filter to -- use this to pull one
+            device's connection history (roaming, drops, auth failures)
+            instead of scrolling the whole site's activity log.
 
-    Returns events sorted by most recent with time, key, and message.
+    Returns events sorted by most recent with time, key, message, device, and mac.
     """
-    events = client.get_data("stat/event")
-    result = []
-    for e in events[:limit]:
-        dt = e.get("datetime", e.get("time", ""))
-        result.append(
-            {
-                "time": dt[:16].replace("T", " ") if dt else "",
-                "key": e.get("key", ""),
-                "message": e.get("msg", ""),
-                "device": e.get("ap_name")
-                or e.get("gw_name")
-                or e.get("sw_name")
-                or "",
-            }
-        )
-    return result
+    return _system_log("all", hours, limit, mac)
 
 
 # ---------------------------------------------------------------------------

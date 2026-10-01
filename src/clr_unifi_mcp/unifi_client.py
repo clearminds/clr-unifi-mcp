@@ -117,3 +117,57 @@ class UniFiClient:
         if isinstance(result, dict):
             return result.get("data", [])
         return result
+
+    def post(self, endpoint: str, json: dict[str, Any] | None = None) -> Any:
+        """Make an authenticated POST request to the UniFi API.
+
+        Several read-only query endpoints (stat/report/*, the v2
+        system-log endpoints that replaced stat/alarm and stat/event on
+        Network 10.x) take their filter -- time range, attrs, paging --
+        as a POST body rather than query params; there is no UniFi
+        endpoint this client calls that mutates state via POST.
+
+        Args:
+            endpoint: The API endpoint path.
+            json: Optional JSON request body.
+
+        Returns:
+            The parsed JSON response body.
+
+        Raises:
+            httpx.HTTPStatusError: If the request fails after authentication.
+        """
+        url = self._resolve_url(endpoint)
+        headers: dict[str, str] = {}
+
+        if self.api_key:
+            headers["X-API-KEY"] = self.api_key
+        elif not self._authenticated:
+            self._login()
+
+        resp = self._client.post(url, headers=headers, json=json)
+
+        if resp.status_code == 401 and not self.api_key:
+            logger.debug("Session expired, re-authenticating")
+            self._login()
+            resp = self._client.post(url, json=json)
+
+        resp.raise_for_status()
+        return resp.json()
+
+    def post_data(
+        self, endpoint: str, json: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Make a POST request and return the ``data`` array from the response.
+
+        Args:
+            endpoint: The API endpoint path.
+            json: Optional JSON request body.
+
+        Returns:
+            The list of result dictionaries from the ``data`` key.
+        """
+        result = self.post(endpoint, json=json)
+        if isinstance(result, dict):
+            return result.get("data", [])
+        return result
