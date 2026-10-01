@@ -455,28 +455,48 @@ def client_dpi(identifier: str) -> dict[str, Any]:
 
 
 @read_tool
-def debug_report(
-    interval: str = "hourly",
-    report_type: str = "user",
-    hours: int = 24,
-    mac: str | None = None,
-    use_macs_list: bool = False,
-) -> Any:
-    """TEMPORARY debug probe for stat/report/{interval}.{report_type} -- live
-    schema for this endpoint is undocumented/contradictory across sources
-    (mac vs macs, unknown timestamp units). Remove once get_client_history
-    ships for real. Returns the raw response, not just the data array, so
-    an error body is visible too.
+def get_client_history(
+    mac: str, interval: str = "hourly", hours: int = 24
+) -> list[dict[str, Any]]:
+    """Get one client's bandwidth history -- per-period RX/TX traffic over time.
+
+    Verified live against our own controller: stat/report/{interval}.user
+    takes "mac" as a single string (not a list), and start/end as epoch
+    milliseconds -- the two things sources disagree on elsewhere.
+
+    Args:
+        mac: Client MAC address (exact match).
+        interval: "5minutes", "hourly", or "daily". Use "hourly" for a day
+            or two of detail, "daily" for a longer trend (set hours
+            accordingly, e.g. 168 for a week of daily buckets).
+        hours: How far back to look, regardless of interval (default 24).
+
+    Returns periods oldest-first, each with time, rx_gb, tx_gb, and total_gb.
     """
     now_ms = int(time.time() * 1000)
-    body: dict[str, Any] = {
+    body = {
         "attrs": ["bytes", "rx_bytes", "tx_bytes", "time"],
         "start": now_ms - hours * 3600 * 1000,
         "end": now_ms,
+        "mac": mac,
     }
-    if mac:
-        body["macs" if use_macs_list else "mac"] = [mac] if use_macs_list else mac
-    return client.post(f"stat/report/{interval}.{report_type}", json=body)
+    periods = client.post_data(f"stat/report/{interval}.user", json=body)
+    result = []
+    for p in periods:
+        ts = p.get("time")
+        rx_gb = round(p.get("rx_bytes", 0) / 1073741824, 3)
+        tx_gb = round(p.get("tx_bytes", 0) / 1073741824, 3)
+        result.append(
+            {
+                "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(ts / 1000))
+                if ts
+                else "",
+                "rx_gb": rx_gb,
+                "tx_gb": tx_gb,
+                "total_gb": round(rx_gb + tx_gb, 3),
+            }
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
