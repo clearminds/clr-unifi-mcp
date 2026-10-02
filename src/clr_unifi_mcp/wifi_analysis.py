@@ -308,17 +308,25 @@ def analyse(
     identity_contains: str | None = None,
     include_iot: bool = False,
     max_clients: int = 50,
+    select: list[str] | None = None,
+    trail_limit: int = 100,
     bucket_minutes: int = 30,
     weak_dbm: int = -80,
     flap_minutes: int = 3,
     pingpong_minutes: int = 15,
     short_session_minutes: int = 2,
 ) -> dict[str, Any]:
-    """Build the report from raw ``list_events`` rows.
+    """Build the full report from raw ``list_events`` rows.
 
     ``subnet`` (CIDR) selects clients by IP: with 802.1X dynamic VLANs the
     events report the WLAN's base network, so the client IP is the reliable
     VLAN signal. ``identity_contains`` selects by 802.1X identity substring.
+
+    ``select`` picks specific clients (a MAC, an IP, or part of an identity).
+    Selected clients get their chronological event trail under ``events``, are
+    not cut by ``max_clients``, and the AP / pair / timeline tables are built
+    from their events only. Selectors that matched nothing are listed under
+    ``unmatched_selectors``.
     """
     identities = {k.lower(): v for k, v in (identities or {}).items()}
     net = ipaddress.ip_network(subnet, strict=False) if subnet else None
@@ -343,6 +351,25 @@ def analyse(
             skipped["identity_filter"] += 1
         else:
             kept[mac] = ev
+
+    unmatched: list[str] = []
+    if select:
+        sels = [x.strip().lower() for x in select if x and x.strip()]
+        chosen: set[str] = set()
+        for sel in sels:
+            hit = {
+                mac
+                for mac, ev in kept.items()
+                if sel == mac
+                or sel == next((e["ip"] for e in reversed(ev) if e["ip"]), None)
+                or sel in (identities.get(mac) or "").lower()
+            }
+            chosen |= hit
+            if not hit:
+                unmatched.append(sel)
+        skipped["not_selected"] += len(kept) - len(chosen)
+        kept = {mac: ev for mac, ev in kept.items() if mac in chosen}
+        max_clients = max(len(kept), 1)
 
     clients = []
     for mac, ev in kept.items():
@@ -369,6 +396,7 @@ def analyse(
                 "last_ts": ev[-1]["ts"],
                 "first": _iso(ev[0]["ts"]),
                 "last": _iso(ev[-1]["ts"]),
+                **({"events": _trail(ev, trail_limit)} if select else {}),
             }
         )
     clients.sort(key=lambda c: (-c["score"], c["identity"] or c["mac"]))
@@ -389,7 +417,7 @@ def analyse(
     if unidentified:
         notes.append(f"{unidentified} client(s) have no 802.1X identity on record.")
 
-    return {
+    report = {
         "summary": {
             "clients": len(clients),
             "events": len(events),
@@ -405,6 +433,85 @@ def analyse(
         "skipped_clients": dict(skipped),
         "score_weights": WEIGHTS,
         "notes": notes,
+    }
+    if select:
+        report["unmatched_selectors"] = unmatched
+    return report
+
+
+def _trail(ev: list[dict[str, Any]], limit: int) -> dict[str, Any]:
+    """One client's chronological story, newest ``limit`` events (None fields
+    dropped to keep it small). ``count`` is the total, ``truncated`` says the
+    oldest were cut."""
+    rows = []
+    for e in ev[-limit:]:
+        row = {
+            "time": _iso(e["ts"]),
+            "kind": e["kind"],
+            "ap_from": e["ap_from"],
+            "ap": e["ap"] or None,
+            "signal": e["signal"],
+            "band": e["band"],
+            "prev_band": e["prev_band"] if e["kind"] == "roam" else None,
+            "channel": e["channel"],
+            "duration_s": e["duration_s"],
+        }
+        rows.append({k: v for k, v in row.items() if v is not None})
+    return {"count": len(ev), "truncated": len(ev) > limit, "items": rows}
+
+
+def compact(
+    report: dict[str, Any], top_clients: int = 10, top_pairs: int = 3, top_aps: int = 3
+) -> dict[str, Any]:
+    """The small default view: a ranked table, the worst pairs / APs and the
+    busiest period. Everything else stays in the full report."""
+
+    def pair(c: dict[str, Any]) -> str | None:
+        p = c["main_ap_pair"]
+        return f"{p['aps'][0]} <-> {p['aps'][1]} (x{p['roams']})" if p else None
+
+    peak = max(report["timeline"], key=lambda b: b["events"], default=None)
+    return {
+        "detail": "summary",
+        "summary": {
+            **report["summary"],
+            "clients_returned": min(len(report["clients"]), top_clients),
+        },
+        "clients": [
+            {
+                "identity": c["identity"] or c["mac"],
+                "mac": c["mac"],
+                "ip": c["ip"],
+                "score": c["score"],
+                "roams": c["metrics"]["roams"],
+                "band_flips": c["metrics"]["band_flips"],
+                "drops": c["metrics"]["drops"],
+                "weak_events": c["metrics"]["weak_events"],
+                "min_dbm": c["metrics"]["min_dbm"],
+                "main_ap_pair": pair(c),
+            }
+            for c in report["clients"][:top_clients]
+        ],
+        "roam_pairs": [
+            {
+                "aps": " <-> ".join(p["aps"]),
+                "roams": p["roams"],
+                "band_flips": p["band_flips"],
+            }
+            for p in report["roam_pairs"][:top_pairs]
+        ],
+        "aps": [
+            {"ap": a["ap"], "events": a["events"], "weak_events": a["weak_events"]}
+            for a in report["aps"][:top_aps]
+        ],
+        "busiest_period": peak,
+        "skipped_clients": report["skipped_clients"],
+        "notes": report["notes"],
+        "more": (
+            "detail='full' adds every metric, AP/pair tables and the timeline; "
+            "clients=[mac | ip | part of identity, ...] returns full metrics and "
+            "the event trail for just those clients."
+        ),
     }
 
 

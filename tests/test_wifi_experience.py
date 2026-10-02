@@ -283,7 +283,7 @@ def test_tool_resolves_identities_and_filters(use_client):
     assert [c["identity"] for c in r["clients"]] == [
         "anna@example.eu"
     ]  # live identity wins
-    assert r["clients"][0]["metrics"]["drops"] == 3
+    assert r["clients"][0]["drops"] == 3  # default is the compact summary view
     assert r["window"]["hours"] == 24 and r["filters"]["ssid"] == "CORP"
     assert r["skipped_clients"] == {"outside_subnet_or_no_ip": 1}
     assert (
@@ -292,6 +292,115 @@ def test_tool_resolves_identities_and_filters(use_client):
         ]
         == 1
     )
+
+
+def _many_clients_log():
+    log = []
+    for n in range(1, 13):  # 12 clients, each with some drops
+        mac = f"aa:00:00:00:01:{n:02x}"
+        for i in range(n):
+            log.append(
+                _raw(n * 20 + i, "CLIENT_DISCONNECTED_WIRELESS_2", mac, f"10.1.1.{n}")
+            )
+    return log
+
+
+def _ident_data():
+    return {
+        "rest/user": [
+            {
+                "mac": f"aa:00:00:00:01:{n:02x}",
+                "last_1x_identity": f"user{n}@example.eu",
+            }
+            for n in range(1, 13)
+        ],
+        "stat/sta": [],
+    }
+
+
+def test_default_is_compact_and_much_smaller_than_full(use_client):
+    import json
+
+    use_client(FakeClient(log=_many_clients_log(), data=_ident_data()))
+    f = _fn(server.wifi_experience_report)
+    small, full = f(), f(detail="full")
+    assert small["detail"] == "summary" and full["detail"] == "full"
+    assert len(small["clients"]) == 10 and small["summary"]["clients"] == 12
+    assert small["summary"]["clients_returned"] == 10
+    assert set(small["clients"][0]) == {
+        "identity",
+        "mac",
+        "ip",
+        "score",
+        "roams",
+        "band_flips",
+        "drops",
+        "weak_events",
+        "min_dbm",
+        "main_ap_pair",
+    }
+    assert "timeline" not in small and "score_weights" not in small and "more" in small
+    assert len(small["roam_pairs"]) <= 3 and len(small["aps"]) <= 3
+    assert len(json.dumps(small)) < len(json.dumps(full)) / 2
+    # full keeps the whole structure; ranking is the same in both
+    assert (
+        "metrics" in full["clients"][0]
+        and "timeline" in full
+        and len(full["clients"]) == 12
+    )
+    assert [c["identity"] for c in small["clients"]] == [
+        c["identity"] for c in full["clients"][:10]
+    ]
+    assert [c["identity"] for c in f(max_clients=3)["clients"]] == [
+        "user12@example.eu",
+        "user11@example.eu",
+        "user10@example.eu",
+    ]
+
+
+def test_clients_drill_down_returns_event_trail(use_client):
+    use_client(FakeClient(log=_many_clients_log(), data=_ident_data()))
+    r = _fn(server.wifi_experience_report)(
+        clients=["USER3@example.eu", "aa:00:00:00:01:05", "10.1.1.7", "nobody@x"],
+        max_clients=1,
+    )
+    assert r["detail"] == "clients"
+    assert sorted(c["identity"] for c in r["clients"]) == [
+        "user3@example.eu",
+        "user5@example.eu",
+        "user7@example.eu",
+    ]
+    c3 = next(c for c in r["clients"] if c["identity"] == "user3@example.eu")
+    assert (
+        "metrics" in c3 and c3["events"]["count"] == 3 and not c3["events"]["truncated"]
+    )
+    item = c3["events"]["items"][0]
+    assert item["kind"] == "disconnect" and "time" in item and None not in item.values()
+    assert r["unmatched_selectors"] == ["nobody@x"]
+    assert r["skipped_clients"]["not_selected"] == 9
+    assert (
+        r["summary"]["clients"] == 3
+    )  # other filters/stats are for the selection only
+
+
+def test_trail_keeps_newest_events_up_to_trail_limit(use_client):
+    log = [_raw(i, "CLIENT_DISCONNECTED_WIRELESS_2", A, "10.1.1.5") for i in range(350)]
+    use_client(
+        FakeClient(
+            log=log,
+            data={"rest/user": [{"mac": A, "last_1x_identity": "a@example.eu"}]},
+        )
+    )
+    f = _fn(server.wifi_experience_report)
+    ev = f(clients=["a@example.eu"])["clients"][0]["events"]  # default limit 100
+    assert (ev["count"], ev["truncated"], len(ev["items"])) == (350, True, 100)
+    times = [i["time"] for i in ev["items"]]
+    assert times == sorted(times)  # chronological
+    full_ev = f(clients=["a@example.eu"], trail_limit=500)["clients"][0]["events"]
+    assert (len(full_ev["items"]), full_ev["truncated"]) == (350, False)
+    assert (
+        ev["items"][-1] == full_ev["items"][-1]
+    )  # the newest events are the ones kept
 
 
 def test_tool_validates_arguments(use_client):
@@ -303,6 +412,9 @@ def test_tool_validates_arguments(use_client):
         {"max_clients": 0},
         {"bucket_minutes": 1},
         {"subnet": "nope"},
+        {"detail": "huge"},
+        {"trail_limit": 0},
+        {"trail_limit": 501},
     ):
         with pytest.raises(ValueError):
             f(**bad)

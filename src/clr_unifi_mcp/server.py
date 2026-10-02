@@ -553,11 +553,23 @@ def wifi_experience_report(
     subnet: str | None = None,
     identity_contains: str | None = None,
     include_iot: bool = False,
-    max_clients: int = 50,
+    max_clients: int | None = None,
     bucket_minutes: int = 30,
+    detail: str = "summary",
+    clients: list[str] | None = None,
+    trail_limit: int = 100,
 ) -> dict[str, Any]:
     """Who had a bad Wi-Fi experience, and where: a ranked, JSON report built
     from the controller's connect / disconnect / roam events.
+
+    Three sizes, so the common question stays cheap:
+      * default (``detail="summary"``, ~3-4 KB): ranked table with the key
+        numbers, the top AP pairs and APs, and the busiest period.
+      * ``detail="full"`` (~16 KB for 16 clients): every metric per client,
+        the AP and pair tables, the timeline, score weights.
+      * ``clients=[...]``: drill into specific clients: full metrics plus their
+        chronological event trail (connects, roams with AP from/to, signal,
+        band). Pick them from the summary by ``mac`` or identity.
 
     One call replaces pulling events, looking up each client's 802.1X
     identity, and tallying by hand. Use it for "which users had the worst
@@ -578,10 +590,23 @@ def wifi_experience_report(
             identity on record never match.
         include_iot: Keep tasmota/relay/esp/shelly-style devices (default off:
             they reconnect every few minutes and drown the ranking).
-        max_clients: How many of the worst clients to return (default 50).
+        max_clients: How many of the worst clients to return (default 10 for
+            summary, 50 for full). Ignored with ``clients``.
         bucket_minutes: Timeline bucket size (5-240, default 30).
+        detail: "summary" (default) or "full".
+        clients: Specific clients to drill into: each entry is a MAC, an IP,
+            or part of an 802.1X identity (e.g. ["a@example.com",
+            "aa:bb:cc:dd:ee:ff"]). Returns full detail + event trail for just
+            those clients; entries that match nothing are listed in
+            ``unmatched_selectors``. Other filters still apply.
+        trail_limit: Newest events kept in each selected client's trail
+            (1-500, default 100); ``events.count`` / ``events.truncated`` say
+            what was cut. A trail costs roughly 170 bytes per event.
 
-    Returns a dict:
+    Returns a dict (summary shape: summary, clients rows with identity, mac,
+    ip, score, roams, band_flips, drops, weak_events, min_dbm, main_ap_pair;
+    roam_pairs and aps top 3; busiest_period; skipped_clients; notes). The
+    full shape, also used for ``clients``:
         summary: clients, events, roams, band_flips, band_flip_share.
         clients: worst first. Each has mac, identity, hostname, ip, ssid,
             score, first/last (UTC), main_ap_pair {aps, roams} and metrics:
@@ -605,7 +630,11 @@ def wifi_experience_report(
     """
     if not 1 <= hours <= 720:
         raise ValueError("hours must be between 1 and 720")
-    if not 1 <= max_clients <= 500:
+    if detail not in ("summary", "full"):
+        raise ValueError('detail must be "summary" or "full"')
+    if not 1 <= trail_limit <= 500:
+        raise ValueError("trail_limit must be between 1 and 500")
+    if max_clients is not None and not 1 <= max_clients <= 500:
         raise ValueError("max_clients must be between 1 and 500")
     if not 5 <= bucket_minutes <= 240:
         raise ValueError("bucket_minutes must be between 5 and 240")
@@ -624,9 +653,17 @@ def wifi_experience_report(
         subnet=subnet,
         identity_contains=identity_contains,
         include_iot=include_iot,
-        max_clients=max_clients,
+        max_clients=max_clients or (50 if detail == "full" else 500),
+        select=clients,
+        trail_limit=trail_limit,
         bucket_minutes=bucket_minutes,
     )
+    if clients:
+        report["detail"] = "clients"
+    elif detail == "summary":
+        report = wifi_analysis.compact(report, top_clients=max_clients or 10)
+    else:
+        report["detail"] = "full"
     report["window"] = {"hours": hours, "timezone": "UTC", "events_fetched": len(rows)}
     report["filters"] = {
         "ssid": ssid,
