@@ -1,6 +1,7 @@
 """UniFi MCP Server — FastMCP tools for UniFi Network."""
 
 import argparse
+import ipaddress
 import logging
 import sys
 import time
@@ -8,6 +9,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from clr_unifi_mcp import wifi_analysis
 from clr_unifi_mcp.config import Settings, configure_logging
 from clr_unifi_mcp.unifi_client import UniFiClient
 from clr_unifi_mcp.middleware import ToolValidationMiddleware
@@ -524,6 +526,157 @@ def list_events(
     key, message, device, mac and ssid ("" when the entry has none).
     """
     return _system_log("all", hours, limit, mac, key=key, ap=ap, ssid=ssid, raw=raw)
+
+
+def _dot1x_identities() -> dict[str, str]:
+    """MAC -> 802.1X identity, from every client the controller knows.
+
+    ``rest/user`` keeps ``last_1x_identity`` for clients that have left;
+    ``stat/sta`` has the live ``1x_identity`` and wins when both exist.
+    """
+    ids: dict[str, str] = {}
+    for c in client.get_data("rest/user"):
+        ident = c.get("last_1x_identity")
+        if ident and c.get("mac"):
+            ids[c["mac"].lower()] = ident
+    for c in client.get_data("stat/sta"):
+        ident = c.get("1x_identity") or c.get("last_1x_identity")
+        if ident and c.get("mac"):
+            ids[c["mac"].lower()] = ident
+    return ids
+
+
+@read_tool
+def wifi_experience_report(
+    ssid: str | None = None,
+    hours: int = 24,
+    subnet: str | None = None,
+    identity_contains: str | None = None,
+    include_iot: bool = False,
+    max_clients: int | None = None,
+    bucket_minutes: int = 30,
+    detail: str = "summary",
+    clients: list[str] | None = None,
+    trail_limit: int = 100,
+) -> dict[str, Any]:
+    """Who had a bad Wi-Fi experience, and where: a ranked, JSON report built
+    from the controller's connect / disconnect / roam events.
+
+    Three sizes, so the common question stays cheap:
+      * default (``detail="summary"``, ~3-4 KB): ranked table with the key
+        numbers, the top AP pairs and APs, and the busiest period.
+      * ``detail="full"`` (~16 KB for 16 clients): every metric per client,
+        the AP and pair tables, the timeline, score weights.
+      * ``clients=[...]``: drill into specific clients: full metrics plus their
+        chronological event trail (connects, roams with AP from/to, signal,
+        band). Pick them from the summary by ``mac`` or identity.
+
+    One call replaces pulling events, looking up each client's 802.1X
+    identity, and tallying by hand. Use it for "which users had the worst
+    Wi-Fi today on SSID X", "is anyone ping-ponging between APs", "which AP
+    pair is the problem" and per-tenant comparisons.
+
+    Args:
+        ssid: Only this SSID, exact, case-insensitive (e.g. "Corp-802.1X").
+            Omit for every wireless client on the site (large, includes IoT).
+        hours: Look-back window (1-720, default 24). At most 5000 events are
+            read; if that cap is hit, ``notes`` says the oldest are missing --
+            use a shorter window.
+        subnet: Only clients whose IP is in this CIDR (e.g. "10.34.6.0/24").
+            This is how to select a dynamic-VLAN tenant: the log reports the
+            WLAN's base network, not the VLAN the user was actually placed on.
+        identity_contains: Only clients whose 802.1X identity contains this
+            text, case-insensitive (e.g. "@example.com"). Clients with no
+            identity on record never match.
+        include_iot: Keep tasmota/relay/esp/shelly-style devices (default off:
+            they reconnect every few minutes and drown the ranking).
+        max_clients: How many of the worst clients to return (default 10 for
+            summary, 50 for full). Ignored with ``clients``.
+        bucket_minutes: Timeline bucket size (5-240, default 30).
+        detail: "summary" (default) or "full".
+        clients: Specific clients to drill into: each entry is a MAC, an IP,
+            or part of an 802.1X identity (e.g. ["a@example.com",
+            "aa:bb:cc:dd:ee:ff"]). Returns full detail + event trail for just
+            those clients; entries that match nothing are listed in
+            ``unmatched_selectors``. Other filters still apply.
+        trail_limit: Newest events kept in each selected client's trail
+            (1-500, default 100); ``events.count`` / ``events.truncated`` say
+            what was cut. A trail costs roughly 170 bytes per event.
+
+    Returns a dict (summary shape: summary, clients rows with identity, mac,
+    ip, score, roams, band_flips, drops, weak_events, min_dbm, main_ap_pair;
+    roam_pairs and aps top 3; busiest_period; skipped_clients; notes). The
+    full shape, also used for ``clients``:
+        summary: clients, events, roams, band_flips, band_flip_share.
+        clients: worst first. Each has mac, identity, hostname, ip, ssid,
+            score, first/last (UTC), main_ap_pair {aps, roams} and metrics:
+            drops, flaps (reconnect to the same AP within 3 min), roams,
+            band_flips (e.g. 6 GHz <-> 5 GHz), ping_pong (A->B->A within
+            15 min), bad_roams (landed >3 dB weaker), weak_events (<= -80
+            dBm), min_dbm, avg_dbm, short_sessions (< 2 min),
+            auth_failures, aps.
+        roam_pairs: busiest AP pairs, both directions folded, with
+            band_flips and to_weaker_signal counts. A pair where nearly
+            every roam is a band flip points at coverage / band steering
+            rather than at the clients.
+        aps: per AP weak_events, channels, avg utilization/interference
+            (sampled at disconnects only) -- worst first.
+        timeline: events / roams / disconnects / weak_events per bucket.
+        skipped_clients: how many clients each filter dropped.
+        score_weights, notes: how the score is built and the caveats.
+
+    Times are UTC (epoch seconds, plus ISO strings). The score is a heuristic
+    of symptoms, not measured throughput: compare clients within one report.
+    """
+    if not 1 <= hours <= 720:
+        raise ValueError("hours must be between 1 and 720")
+    if detail not in ("summary", "full"):
+        raise ValueError('detail must be "summary" or "full"')
+    if not 1 <= trail_limit <= 500:
+        raise ValueError("trail_limit must be between 1 and 500")
+    if max_clients is not None and not 1 <= max_clients <= 500:
+        raise ValueError("max_clients must be between 1 and 500")
+    if not 5 <= bucket_minutes <= 240:
+        raise ValueError("bucket_minutes must be between 5 and 240")
+    if subnet:
+        try:
+            ipaddress.ip_network(subnet, strict=False)
+        except ValueError as e:
+            raise ValueError(f"subnet must be a CIDR such as 10.0.0.0/24: {e}") from e
+
+    rows = _system_log(
+        "all", hours, _LOG_MAX_PAGES * _LOG_PAGE_SIZE, None, ssid=ssid, raw=True
+    )
+    report = wifi_analysis.analyse(
+        rows,
+        _dot1x_identities(),
+        subnet=subnet,
+        identity_contains=identity_contains,
+        include_iot=include_iot,
+        max_clients=max_clients or (50 if detail == "full" else 500),
+        select=clients,
+        trail_limit=trail_limit,
+        bucket_minutes=bucket_minutes,
+    )
+    if clients:
+        report["detail"] = "clients"
+    elif detail == "summary":
+        report = wifi_analysis.compact(report, top_clients=max_clients or 10)
+    else:
+        report["detail"] = "full"
+    report["window"] = {"hours": hours, "timezone": "UTC", "events_fetched": len(rows)}
+    report["filters"] = {
+        "ssid": ssid,
+        "subnet": subnet,
+        "identity_contains": identity_contains,
+        "include_iot": include_iot,
+    }
+    if len(rows) >= _LOG_MAX_PAGES * _LOG_PAGE_SIZE:
+        report["notes"].append(
+            f"Event cap ({len(rows)}) reached: the window is truncated, oldest events missing. "
+            "Use a shorter window."
+        )
+    return report
 
 
 # ---------------------------------------------------------------------------
