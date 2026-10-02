@@ -415,23 +415,83 @@ def test_tool_validates_arguments(use_client):
         {"detail": "huge"},
         {"trail_limit": 0},
         {"trail_limit": 501},
+        {"max_scan_events": 199},
+        {"max_scan_events": 100001},
     ):
         with pytest.raises(ValueError):
             f(**bad)
 
 
-def test_tool_flags_event_cap(use_client, monkeypatch):
-    monkeypatch.setattr(server, "_LOG_MAX_PAGES", 1)  # cap = 200 events
-    use_client(
-        FakeClient(
-            log=[
-                _raw(i, "CLIENT_DISCONNECTED_WIRELESS_2", A, "10.1.1.5")
-                for i in range(250)
-            ]
-        )
+def _noisy_log():
+    """Newest-first: 400 noise entries on another SSID, then 50 older 'corp' ones."""
+    log = [
+        _raw(i, "CLIENT_DISCONNECTED_WIRELESS_2", B, "10.9.9.9", ssid_name="guest")
+        for i in range(400)
+    ]
+    log += [
+        _raw(400 + i, "CLIENT_DISCONNECTED_WIRELESS_2", A, "10.1.1.5")
+        for i in range(50)
+    ]
+    return log
+
+
+def _noisy_client():
+    return FakeClient(
+        log=_noisy_log(),
+        data={"rest/user": [{"mac": A, "last_1x_identity": "a@example.eu"}]},
     )
-    r = _fn(server.wifi_experience_report)()
-    assert r["window"]["events_fetched"] == 200 and any("cap" in n for n in r["notes"])
+
+
+def test_short_scan_reports_incomplete_window_not_silent_truncation(use_client):
+    use_client(_noisy_client())
+    r = _fn(server.wifi_experience_report)(ssid="corp", max_scan_events=200)
+    w = r["window"]  # the matches are further back than one page
+    assert (w["complete"], w["scanned_events"], w["events_matched"]) == (False, 200, 0)
+    assert w["oldest_scanned"].startswith("2026-")
+    assert (
+        r["notes"][0].startswith("INCOMPLETE WINDOW") and "scan limit" in r["notes"][0]
+    )
+    assert r["summary"]["clients"] == 0
+
+
+def test_full_scan_is_complete_and_finds_older_matches(use_client):
+    use_client(_noisy_client())
+    r = _fn(server.wifi_experience_report)(ssid="corp", max_scan_events=1000)
+    w = r["window"]
+    assert (w["complete"], w["scanned_events"], w["events_matched"]) == (True, 450, 50)
+    assert not any("INCOMPLETE" in n for n in r["notes"])
+    assert (
+        r["clients"][0]["identity"] == "a@example.eu" and r["clients"][0]["drops"] == 50
+    )
+
+
+def test_oldest_scanned_is_the_oldest_raw_entry_read(use_client):
+    from datetime import datetime, timezone
+
+    use_client(_noisy_client())
+    r = _fn(server.wifi_experience_report)(ssid="corp", max_scan_events=200)
+    oldest = datetime.fromtimestamp(
+        (1_790_000_000_000 - 199 * 60_000) // 1000, tz=timezone.utc
+    )
+    assert r["window"]["oldest_scanned"] == oldest.isoformat()
+
+
+def test_scan_time_limit_is_reported(use_client, monkeypatch):
+    monkeypatch.setattr(server, "_LOG_MAX_SECONDS", -1)  # over time after one page
+    use_client(_noisy_client())
+    r = _fn(server.wifi_experience_report)(ssid="corp", max_scan_events=1000)
+    assert r["window"]["complete"] is False and r["window"]["scanned_events"] == 200
+    assert "time limit" in r["notes"][0]
+
+
+def test_list_events_can_scan_deeper(use_client):
+    use_client(_noisy_client())
+    f = _fn(server.list_events)
+    assert len(f(limit=100, ssid="corp")) == 50  # default scan covers all 450 here
+    assert f(limit=100, ssid="corp", max_scan_events=200) == []  # one page: too shallow
+    assert len(f(limit=100, ssid="corp", max_scan_events=1000)) == 50
+    with pytest.raises(ValueError):
+        f(max_scan_events=199)
 
 
 def test_tool_is_registered_read_only():

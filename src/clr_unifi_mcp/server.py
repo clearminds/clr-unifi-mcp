@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastmcp import FastMCP
@@ -379,6 +380,10 @@ def _param_text(params: Any, *needles: str) -> str:
     return ""
 
 
+# Wall-clock guard for a scan, so a very deep one cannot hang a tool call.
+_LOG_MAX_SECONDS = 90
+
+
 def _system_log(
     category: str,
     hours: int,
@@ -388,12 +393,37 @@ def _system_log(
     ap: str | None = None,
     ssid: str | None = None,
     raw: bool = False,
+    max_scan: int = _LOG_MAX_PAGES * _LOG_PAGE_SIZE,
 ) -> list[dict[str, Any]]:
+    """Matching log entries only; see ``_scan_system_log`` for coverage details."""
+    return _scan_system_log(category, hours, limit, mac, key, ap, ssid, raw, max_scan)[
+        0
+    ]
+
+
+def _scan_system_log(
+    category: str,
+    hours: int,
+    limit: int,
+    mac: str | None,
+    key: str | None = None,
+    ap: str | None = None,
+    ssid: str | None = None,
+    raw: bool = False,
+    max_scan: int = _LOG_MAX_PAGES * _LOG_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Query the v2 system-log API that replaced stat/alarm and stat/event
     on UniFi Network 10.x (the legacy endpoints now 404 there).
 
     Pages through the log (newest first) until ``limit`` matching entries are
-    found, the log runs out, or ``_LOG_MAX_PAGES`` is reached.
+    found, the log runs out, ``max_scan`` RAW entries have been read, or
+    ``_LOG_MAX_SECONDS`` have passed. Filters (mac, key, ap, ssid) are applied
+    client-side, so ``max_scan`` bounds how far back the scan reaches, not how
+    many matches come back: on a busy site 5000 raw entries can be only a few
+    hours. Returns ``(rows, meta)``; ``meta`` says how far the scan got:
+    ``scanned`` raw entries, ``oldest_ts`` (epoch s, oldest entry read),
+    ``from_ts`` (start of the requested window) and ``stopped`` (None when the
+    whole window was read, else "scan_cap", "time" or "limit").
 
     Args:
         category: Log category -- "all" (general activity) or
@@ -409,6 +439,7 @@ def _system_log(
         ssid: Optional case-insensitive exact SSID; entries that carry no
             SSID never match.
         raw: Include the entry's untouched ``parameters`` as ``params``.
+        max_scan: Most raw entries to read (rounded up to whole pages).
     """
     now_ms = int(time.time() * 1000)
     mac_l = mac.lower() if mac else None
@@ -418,7 +449,12 @@ def _system_log(
     url = f"/proxy/network/v2/api/site/{client.site}/system-log/{category}"
 
     result: list[dict[str, Any]] = []
-    for page in range(_LOG_MAX_PAGES):
+    max_pages = max(1, -(-max_scan // _LOG_PAGE_SIZE))
+    deadline = time.monotonic() + _LOG_MAX_SECONDS
+    scanned = 0
+    oldest_ms: int | None = None
+    stopped: str | None = "scan_cap"  # cleared when the log is read to its end
+    for page in range(max_pages):
         body = {
             "timestampFrom": now_ms - hours * 3600 * 1000,
             "timestampTo": now_ms,
@@ -427,7 +463,13 @@ def _system_log(
         }
         entries = client.post_data(url, json=body)
         if not entries:
+            stopped = None
             break
+        scanned += len(entries)
+        for e in entries:
+            e_ts = e.get("timestamp")
+            if e_ts:
+                oldest_ms = e_ts if oldest_ms is None else min(oldest_ms, e_ts)
         for e in entries:
             params = e.get("parameters")
             client_entity = _param_entity(e, "CLIENT", "MAC", "USER")
@@ -472,10 +514,23 @@ def _system_log(
                 row["params"] = params
             result.append(row)
             if len(result) >= limit:
-                return result
-        if len(entries) < _LOG_PAGE_SIZE:
+                stopped = "limit"
+                break
+        if stopped == "limit":
             break
-    return result
+        if len(entries) < _LOG_PAGE_SIZE:
+            stopped = None
+            break
+        if time.monotonic() > deadline:
+            stopped = "time"
+            break
+    meta = {
+        "scanned": scanned,
+        "oldest_ts": oldest_ms // 1000 if oldest_ms else None,
+        "from_ts": (now_ms - hours * 3600 * 1000) // 1000,
+        "stopped": stopped,
+    }
+    return result, meta
 
 
 @read_tool
@@ -500,13 +555,17 @@ def list_events(
     ap: str | None = None,
     ssid: str | None = None,
     raw: bool = False,
+    max_scan_events: int = 5000,
 ) -> list[dict[str, Any]]:
     """List recent UniFi events -- connects, disconnects, roams, auth failures, etc.
 
-    Pages through the whole window, so a large ``limit`` really reaches back
-    ``hours`` (capped at 5000 entries per call). Filters are applied
-    server-side before ``limit``, which makes them the way to dig through a
-    noisy site (e.g. IoT devices reconnecting every few minutes).
+    Reads the site-wide log newest-first and applies the filters as it goes,
+    stopping after ``limit`` matches or ``max_scan_events`` raw entries. On a
+    busy site 5000 raw entries can be only a few hours, so for a long ``hours``
+    window with narrow filters raise ``max_scan_events`` (up to 100000) or the
+    result silently stops short of the window. Filters are applied before
+    ``limit``, which makes them the way to dig through a noisy site (e.g. IoT
+    devices reconnecting every few minutes).
 
     Args:
         limit: Maximum number of events to return (default 20).
@@ -521,11 +580,24 @@ def list_events(
             can match -- use ``raw=True`` to see whether your controller
             includes one.
         raw: Include each entry's untouched ``parameters`` as ``params``.
+        max_scan_events: Most raw log entries to read (200-100000, default 5000).
 
     Returns events sorted by most recent with time, timestamp (epoch seconds),
     key, message, device, mac and ssid ("" when the entry has none).
     """
-    return _system_log("all", hours, limit, mac, key=key, ap=ap, ssid=ssid, raw=raw)
+    if not 200 <= max_scan_events <= 100000:
+        raise ValueError("max_scan_events must be between 200 and 100000")
+    return _system_log(
+        "all",
+        hours,
+        limit,
+        mac,
+        key=key,
+        ap=ap,
+        ssid=ssid,
+        raw=raw,
+        max_scan=max_scan_events,
+    )
 
 
 def _dot1x_identities() -> dict[str, str]:
@@ -558,6 +630,7 @@ def wifi_experience_report(
     detail: str = "summary",
     clients: list[str] | None = None,
     trail_limit: int = 100,
+    max_scan_events: int = 30000,
 ) -> dict[str, Any]:
     """Who had a bad Wi-Fi experience, and where: a ranked, JSON report built
     from the controller's connect / disconnect / roam events.
@@ -579,9 +652,12 @@ def wifi_experience_report(
     Args:
         ssid: Only this SSID, exact, case-insensitive (e.g. "Corp-802.1X").
             Omit for every wireless client on the site (large, includes IoT).
-        hours: Look-back window (1-720, default 24). At most 5000 events are
-            read; if that cap is hit, ``notes`` says the oldest are missing --
-            use a shorter window.
+        hours: Look-back window (1-720, default 24). The controller log is
+            site-wide and read newest-first, so a busy site can exhaust
+            ``max_scan_events`` before reaching the start of the window.
+            ``window.complete`` says whether the whole window was read; when it
+            is false, ``window.oldest_scanned`` is how far back the report
+            really reaches and ``notes`` repeats the warning.
         subnet: Only clients whose IP is in this CIDR (e.g. "10.34.6.0/24").
             This is how to select a dynamic-VLAN tenant: the log reports the
             WLAN's base network, not the VLAN the user was actually placed on.
@@ -599,6 +675,11 @@ def wifi_experience_report(
             "aa:bb:cc:dd:ee:ff"]). Returns full detail + event trail for just
             those clients; entries that match nothing are listed in
             ``unmatched_selectors``. Other filters still apply.
+        max_scan_events: Most RAW log entries to read (200-100000, default
+            30000, ~150 requests; a scan also stops after 90 s). Filters are
+            applied after reading, so this bounds how far back the report
+            reaches, not how many clients it returns. Raise it for long
+            windows on a busy site.
         trail_limit: Newest events kept in each selected client's trail
             (1-500, default 100); ``events.count`` / ``events.truncated`` say
             what was cut. A trail costs roughly 170 bytes per event.
@@ -632,6 +713,8 @@ def wifi_experience_report(
         raise ValueError("hours must be between 1 and 720")
     if detail not in ("summary", "full"):
         raise ValueError('detail must be "summary" or "full"')
+    if not 200 <= max_scan_events <= 100000:
+        raise ValueError("max_scan_events must be between 200 and 100000")
     if not 1 <= trail_limit <= 500:
         raise ValueError("trail_limit must be between 1 and 500")
     if max_clients is not None and not 1 <= max_clients <= 500:
@@ -644,8 +727,14 @@ def wifi_experience_report(
         except ValueError as e:
             raise ValueError(f"subnet must be a CIDR such as 10.0.0.0/24: {e}") from e
 
-    rows = _system_log(
-        "all", hours, _LOG_MAX_PAGES * _LOG_PAGE_SIZE, None, ssid=ssid, raw=True
+    rows, scan = _scan_system_log(
+        "all",
+        hours,
+        max_scan_events,
+        None,
+        ssid=ssid,
+        raw=True,
+        max_scan=max_scan_events,
     )
     report = wifi_analysis.analyse(
         rows,
@@ -664,17 +753,38 @@ def wifi_experience_report(
         report = wifi_analysis.compact(report, top_clients=max_clients or 10)
     else:
         report["detail"] = "full"
-    report["window"] = {"hours": hours, "timezone": "UTC", "events_fetched": len(rows)}
+
+    def _iso(ts: int | None) -> str | None:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else None
+
+    complete = scan["stopped"] is None
+    report["window"] = {
+        "hours": hours,
+        "timezone": "UTC",
+        "requested_from": _iso(scan["from_ts"]),
+        "oldest_scanned": _iso(scan["oldest_ts"]),
+        "complete": complete,
+        "scanned_events": scan["scanned"],
+        "events_matched": len(rows),
+    }
     report["filters"] = {
         "ssid": ssid,
         "subnet": subnet,
         "identity_contains": identity_contains,
         "include_iot": include_iot,
     }
-    if len(rows) >= _LOG_MAX_PAGES * _LOG_PAGE_SIZE:
-        report["notes"].append(
-            f"Event cap ({len(rows)}) reached: the window is truncated, oldest events missing. "
-            "Use a shorter window."
+    if not complete:
+        why = {
+            "scan_cap": f"the {scan['scanned']}-event scan limit was reached",
+            "time": "the 90 s scan time limit was reached",
+            "limit": "the match limit was reached",
+        }[scan["stopped"]]
+        report["notes"].insert(
+            0,
+            f"INCOMPLETE WINDOW: {why}, so events older than "
+            f"{_iso(scan['oldest_ts'])} UTC were not read (requested back to "
+            f"{_iso(scan['from_ts'])}). Raise max_scan_events or use a shorter "
+            "window before drawing conclusions about the missing period.",
         )
     return report
 
